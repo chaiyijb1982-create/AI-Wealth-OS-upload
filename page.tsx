@@ -2569,17 +2569,23 @@ const hongKongStats = useMemo(() => {
                 <div className="text-right">
 
                   <div className="text-sm font-semibold text-gray-900">
-                    {formatNativeMoney(
-                      native.amount
-                    )}
-                  </div>
+                  {native.currency === "USD"
+                    ? "$"
+                    : native.currency === "HKD"
+                      ? "HK$"
+                      : ""}
+                  {formatNativeMoney(native.amount)}
+                </div>
 
-                  <div className="mt-0.5 text-[11px] text-gray-400">
-                    成本：
-                    {formatNativeMoney(
-                      native.cost
-                    )}
-                  </div>
+                <div className="text-xs text-gray-500">
+                  成本：
+                  {native.currency === "USD"
+                    ? "$"
+                    : native.currency === "HKD"
+                      ? "HK$"
+                      : ""}
+                  {formatNativeMoney(native.cost)}
+                </div>
 
                 </div>
 
