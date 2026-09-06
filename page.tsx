@@ -1356,6 +1356,95 @@ const hongKongStats = useMemo(() => {
     0
   );
 
+const mainlandPlatformStats = useMemo(() => {
+  const map = new Map<
+    string,
+    {
+      platform: string;
+      amount: number;
+      cost: number;
+    }
+  >();
+
+  mainlandHoldings.forEach((holding) => {
+    const platform =
+      holding.platform?.trim() || "未设置平台";
+
+    const current = map.get(platform) ?? {
+      platform,
+      amount: 0,
+      cost: 0,
+    };
+
+    current.amount += Number(holding.amount ?? 0);
+    current.cost += Number(holding.cost ?? 0);
+
+    map.set(platform, current);
+  });
+
+  return Array.from(map.values())
+    .map((item) => ({
+      ...item,
+      profit: item.amount - item.cost,
+      profitRate:
+        item.cost > 0
+          ? ((item.amount - item.cost) / item.cost) * 100
+          : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}, [mainlandHoldings]);
+
+const hongKongPlatformStats = useMemo(() => {
+  const map = new Map<
+    string,
+    {
+      platform: string;
+      currency: string;
+      amount: number;
+      cost: number;
+    }
+  >();
+
+  hongKongHoldings.forEach((holding) => {
+    const platform =
+      holding.platform?.trim() || "未设置平台";
+
+    const currency =
+      holding.native_currency?.trim().toUpperCase() || "USD";
+
+    const key = `${platform}__${currency}`;
+
+    const current = map.get(key) ?? {
+      platform,
+      currency,
+      amount: 0,
+      cost: 0,
+    };
+
+    current.amount += Number(
+      holding.native_amount ?? 0
+    );
+
+    current.cost += Number(
+      holding.native_cost ?? 0
+    );
+
+    map.set(key, current);
+  });
+
+  return Array.from(map.values())
+    .map((item) => ({
+      ...item,
+      profit: item.amount - item.cost,
+      profitRate:
+        item.cost > 0
+          ? ((item.amount - item.cost) / item.cost) * 100
+          : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}, [hongKongHoldings]);
+
+
   const cost = hongKongHoldings.reduce(
     (total, item) =>
       total + Number(item.cost || 0),
@@ -2339,12 +2428,12 @@ const hongKongStats = useMemo(() => {
             />
 
           </div>
-          
+            </div>
          {/* =================================================
     区域统计
 ================================================= */}
 
-<div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+<div className="mb-5 grid grid-cols-1 gap-4">
 
   {/* =================================================
       大陆资产
@@ -2456,6 +2545,70 @@ const hongKongStats = useMemo(() => {
           )}
         </div>
       </div>
+
+     <div className="mt-6 border-t pt-5">
+  <div className="mb-3 text-sm font-semibold text-gray-700">
+    平台统计
+  </div>
+
+  <div className="overflow-x-auto">
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b text-left text-gray-500">
+          <th className="py-2">平台</th>
+          <th className="py-2 text-right">当前金额</th>
+          <th className="py-2 text-right">成本</th>
+          <th className="py-2 text-right">盈亏</th>
+          <th className="py-2 text-right">收益率</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        {mainlandPlatformStats.map((item) => (
+          <tr
+            key={item.platform}
+            className="border-b last:border-0"
+          >
+            <td className="py-2 font-medium text-gray-800">
+              {item.platform}
+            </td>
+
+            <td className="py-2 text-right">
+              ¥{formatNumber(item.amount, 2)}
+            </td>
+
+            <td className="py-2 text-right">
+              ¥{formatNumber(item.cost, 2)}
+            </td>
+
+            <td
+              className={`py-2 text-right ${
+                item.profit >= 0
+                  ? "text-green-600"
+                  : "text-red-600"
+              }`}
+            >
+              {item.profit >= 0 ? "+" : "-"}¥
+              {formatNumber(Math.abs(item.profit), 2)}
+            </td>
+
+            <td
+              className={`py-2 text-right ${
+                item.profitRate >= 0
+                  ? "text-green-600"
+                  : "text-red-600"
+              }`}
+            >
+              {item.profitRate >= 0 ? "+" : ""}
+              {item.profitRate.toFixed(2)}%
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 
     </div>
 
@@ -2584,6 +2737,88 @@ const hongKongStats = useMemo(() => {
           </div>
         </div>
 
+       <div className="mt-6 border-t pt-5">
+  <div className="mb-3 text-sm font-semibold text-gray-700">
+    平台统计 · 本币
+  </div>
+
+  <div className="overflow-x-auto">
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b text-left text-gray-500">
+          <th className="py-2">平台</th>
+          <th className="py-2">本币</th>
+          <th className="py-2 text-right">当前金额</th>
+          <th className="py-2 text-right">成本</th>
+          <th className="py-2 text-right">盈亏</th>
+          <th className="py-2 text-right">收益率</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        {hongKongPlatformStats.map((item) => {
+          const symbol =
+            item.currency === "HKD"
+              ? "HK$"
+              : item.currency === "USD"
+                ? "$"
+                : `${item.currency} `;
+
+          return (
+            <tr
+              key={`${item.platform}-${item.currency}`}
+              className="border-b last:border-0"
+            >
+              <td className="py-2 font-medium text-gray-800">
+                {item.platform}
+              </td>
+
+              <td className="py-2 text-gray-500">
+                {item.currency}
+              </td>
+
+              <td className="py-2 text-right">
+                {symbol}
+                {formatNativeMoney(item.amount)}
+              </td>
+
+              <td className="py-2 text-right">
+                {symbol}
+                {formatNativeMoney(item.cost)}
+              </td>
+
+              <td
+                className={`py-2 text-right ${
+                  item.profit >= 0
+                    ? "text-green-600"
+                    : "text-red-600"
+                }`}
+              >
+                {item.profit >= 0 ? "+" : "-"}
+                {symbol}
+                {formatNativeMoney(
+                  Math.abs(item.profit)
+                )}
+              </td>
+
+              <td
+                className={`py-2 text-right ${
+                  item.profitRate >= 0
+                    ? "text-green-600"
+                    : "text-red-600"
+                }`}
+              >
+                {item.profitRate >= 0 ? "+" : ""}
+                {item.profitRate.toFixed(2)}%
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  </div>
+</div>
+  
       </div>
 
     </div>
@@ -2734,7 +2969,7 @@ const hongKongStats = useMemo(() => {
 
 </div>
 
-        </div>
+      
 
         {/* =================================================
             CURRENT HOLDINGS
