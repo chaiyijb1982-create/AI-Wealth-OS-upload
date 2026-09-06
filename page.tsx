@@ -2657,53 +2657,7 @@ const hongKongStats = useMemo(() => {
 
         </div>
 
- {/* USD → HKD */}
-        {usdToHkdRate != null && (
-          <div
-            className="
-              flex
-              items-center
-              justify-between
-              rounded-lg
-              bg-gray-50
-              px-3
-              py-2.5
-            "
-          >
-            <div className="font-medium text-gray-700">
-              HKD
-            </div>
 
-            <div className="text-right">
-
-              <div className="text-sm font-semibold text-gray-900">
-                HK$
-                {formatNativeMoney(
-                  (
-                    hongKongStats.native.find(
-                      native =>
-                        native.currency === "USD"
-                    )?.amount || 0
-                  ) * usdToHkdRate
-                )}
-              </div>
-
-              <div className="mt-0.5 text-[11px] text-gray-400">
-                成本：
-                HK$
-                {formatNativeMoney(
-                  (
-                    hongKongStats.native.find(
-                      native =>
-                        native.currency === "USD"
-                    )?.cost || 0
-                  ) * usdToHkdRate
-                )}
-              </div>
-
-            </div>
-          </div>
-        )}
 
 
 
