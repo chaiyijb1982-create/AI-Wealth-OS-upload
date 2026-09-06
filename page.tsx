@@ -2594,76 +2594,141 @@ const hongKongStats = useMemo(() => {
     ================================================= */}
 
     <div>
+  <div className="mb-3 text-xs font-medium text-gray-500">
+    本币统计
+  </div>
 
-      <div className="mb-3 text-xs font-medium text-gray-500">
-        本币统计
-      </div>
+  {hongKongStats.native.length === 0 ? (
 
-      {hongKongStats.native.length === 0 ? (
-
-        <div className="text-sm text-gray-400">
-          暂无本币数据
-        </div>
-
-      ) : (
-
-        <div className="space-y-2">
-
-          {hongKongStats.native.map(
-            native => (
-              <div
-                key={native.currency}
-                className="
-                  flex
-                  items-center
-                  justify-between
-                  rounded-lg
-                  bg-gray-50
-                  px-3
-                  py-2.5
-                "
-              >
-
-                <div className="font-medium text-gray-700">
-                  {native.currency}
-                </div>
-
-                <div className="text-right">
-
-                  <div className="text-sm font-semibold text-gray-900">
-                  {native.currency === "USD"
-                    ? "$"
-                    : native.currency === "HKD"
-                      ? "HK$"
-                      : ""}
-                  {formatNativeMoney(native.amount)}
-                </div>
-
-                <div className="text-xs text-gray-500">
-                  成本：
-                  {native.currency === "USD"
-                    ? "$"
-                    : native.currency === "HKD"
-                      ? "HK$"
-                      : ""}
-                  {formatNativeMoney(native.cost)}
-                </div>
-
-                </div>
-
-              </div>
-            )
-          )}
-
-        </div>
-
-
-
-
-
-      )}
-    
+    <div className="text-sm text-gray-400">
+      暂无本币数据
     </div>
+
+  ) : (
+
+    <div className="space-y-2">
+
+      {/* =========================
+          原有本币
+      ========================= */}
+
+      {hongKongStats.native.map(
+        native => (
+          <div
+            key={native.currency}
+            className="
+              flex
+              items-center
+              justify-between
+              rounded-lg
+              bg-gray-50
+              px-3
+              py-2.5
+            "
+          >
+
+            <div className="font-medium text-gray-700">
+              {native.currency}
+            </div>
+
+            <div className="text-right">
+
+              <div className="text-sm font-semibold text-gray-900">
+                {native.currency === "USD"
+                  ? "$"
+                  : native.currency === "HKD"
+                    ? "HK$"
+                    : ""}
+                {formatNativeMoney(
+                  native.amount
+                )}
+              </div>
+
+              <div className="mt-0.5 text-[11px] text-gray-400">
+                成本：
+                {native.currency === "USD"
+                  ? "$"
+                  : native.currency === "HKD"
+                    ? "HK$"
+                    : ""}
+                {formatNativeMoney(
+                  native.cost
+                )}
+              </div>
+
+            </div>
+
+          </div>
+        )
+      )}
+
+      {/* =========================
+          USD → HKD
+          
+          只有数据库没有 HKD 时
+          才显示换算出来的 HKD
+      ========================= */}
+
+      {usdToHkdRate != null &&
+        !hongKongStats.native.some(
+          native =>
+            native.currency === "HKD"
+        ) && (
+
+          <div
+            className="
+              flex
+              items-center
+              justify-between
+              rounded-lg
+              bg-gray-50
+              px-3
+              py-2.5
+            "
+          >
+
+            <div className="font-medium text-gray-700">
+              HKD
+            </div>
+
+            <div className="text-right">
+
+              <div className="text-sm font-semibold text-gray-900">
+                HK$
+                {formatNativeMoney(
+                  (
+                    hongKongStats.native.find(
+                      native =>
+                        native.currency === "USD"
+                    )?.amount || 0
+                  ) * usdToHkdRate
+                )}
+              </div>
+
+              <div className="mt-0.5 text-[11px] text-gray-400">
+                成本：
+                HK$
+                {formatNativeMoney(
+                  (
+                    hongKongStats.native.find(
+                      native =>
+                        native.currency === "USD"
+                    )?.cost || 0
+                  ) * usdToHkdRate
+                )}
+              </div>
+
+            </div>
+
+          </div>
+
+        )}
+
+    </div>
+
+  )}
+
+</div>
 
   </div>
 
