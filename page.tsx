@@ -2145,7 +2145,7 @@ export default function InvestmentTransactionsPage() {
 
               market,
 
-              category: "cash",
+              category: "fixed_income",
 
               amount:
                 Math.round(
@@ -2313,7 +2313,7 @@ export default function InvestmentTransactionsPage() {
 
             market,
 
-            category: "cash",
+            category: "fixed_income",
 
             amount:
               Math.round(
