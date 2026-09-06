@@ -1513,67 +1513,180 @@ const mainlandPlatformStats = useMemo(() => {
 // 本币
 // USD / HKD 分开统计
 // ===================================================
-const hongKongPlatformStats = useMemo(() => {
-  const map = new Map<
-    string,
-    {
-      platform: string;
-      currency: string;
-      amount: number;
-      cost: number;
+
+
+
+  // ===================================================
+  // 大陆平台统计
+  //
+  // 全部使用 CNY
+  // ===================================================
+
+
+
+  // ===================================================
+  // 香港平台统计
+  //
+  // 原本币种保留
+  //
+  // USD 平台：
+  // 自动增加一行 HKD
+  //
+  // HKD 只用于显示
+  // 不写入 holding_native_currency
+  // ===================================================
+
+  const hongKongPlatformStats = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        platform: string;
+        currency: string;
+        amount: number;
+        cost: number;
+      }
+    >();
+
+    hongKongHoldings.forEach((holding) => {
+      const platform =
+        holding.platform?.trim() || "未设置平台";
+
+      const currency =
+        holding.native_currency
+          ?.trim()
+          .toUpperCase() || "USD";
+
+      const key =
+        `${platform}__${currency}`;
+
+      const current = map.get(key) ?? {
+        platform,
+        currency,
+        amount: 0,
+        cost: 0,
+      };
+
+      current.amount += Number(
+        holding.native_amount ?? 0
+      );
+
+      current.cost += Number(
+        holding.native_cost ?? 0
+      );
+
+      map.set(key, current);
+    });
+
+    const result = Array.from(
+      map.values()
+    ).map((item) => {
+      const profit =
+        item.amount - item.cost;
+
+      return {
+        ...item,
+        profit,
+        profitRate:
+          item.cost > 0
+            ? (profit / item.cost) * 100
+            : 0,
+      };
+    });
+
+    // =================================================
+    // USD → HKD
+    //
+    // 只做 UI 显示
+    // 不写数据库
+    // 不生成 holding_native_currency
+    // =================================================
+
+    if (
+      usdToHkdRate != null &&
+      Number.isFinite(
+        usdToHkdRate
+      ) &&
+      usdToHkdRate > 0
+    ) {
+      const usdRows =
+        result.filter(
+          (item) =>
+            item.currency === "USD"
+        );
+
+      for (const usdRow of usdRows) {
+        const hkdAmount =
+          usdRow.amount *
+          usdToHkdRate;
+
+        const hkdCost =
+          usdRow.cost *
+          usdToHkdRate;
+
+        const hkdProfit =
+          hkdAmount -
+          hkdCost;
+
+        result.push({
+          platform:
+            usdRow.platform,
+
+          currency: "HKD",
+
+          amount:
+            hkdAmount,
+
+          cost:
+            hkdCost,
+
+          profit:
+            hkdProfit,
+
+          // 汇率转换不会改变收益率
+          profitRate:
+            usdRow.profitRate,
+        });
+      }
     }
-  >();
 
-  hongKongHoldings.forEach((holding) => {
-    const platform =
-      holding.platform?.trim() || "未设置平台";
+    return result.sort(
+      (a, b) => {
+        if (
+          a.platform !==
+          b.platform
+        ) {
+          return a.platform.localeCompare(
+            b.platform,
+            "zh-CN"
+          );
+        }
 
-    const currency =
-      holding.native_currency
-        ?.trim()
-        .toUpperCase() || "USD";
+        // 同一平台：
+        // USD 在前，HKD 在后
+        if (
+          a.currency === "USD" &&
+          b.currency === "HKD"
+        ) {
+          return -1;
+        }
 
-    const key =
-      `${platform}__${currency}`;
+        if (
+          a.currency === "HKD" &&
+          b.currency === "USD"
+        ) {
+          return 1;
+        }
 
-    const current = map.get(key) ?? {
-      platform,
-      currency,
-      amount: 0,
-      cost: 0,
-    };
-
-    current.amount += Number(
-      holding.native_amount ?? 0
+        return 0;
+      }
     );
+  }, [
+    hongKongHoldings,
+    usdToHkdRate,
+  ]);
 
-    current.cost += Number(
-      holding.native_cost ?? 0
-    );
 
-    map.set(key, current);
-  });
 
-  return Array.from(map.values())
-    .map((item) => ({
-      ...item,
-      profit:
-        item.amount - item.cost,
-      profitRate:
-        item.cost > 0
-          ? (
-              (item.amount - item.cost) /
-              item.cost
-            ) * 100
-          : 0,
-    }))
-    .sort(
-      (a, b) =>
-        b.amount - a.amount
-    );
-}, [
-  hongKongHoldings,
-]);
   // ===================================================
   // 新增
   // ===================================================
@@ -2466,7 +2579,7 @@ const hongKongPlatformStats = useMemo(() => {
     区域统计
 ================================================= */}
 
-<div className="mb-5 grid grid-cols-1 gap-4">
+<div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
 
   {/* =================================================
       大陆资产
@@ -2579,7 +2692,7 @@ const hongKongPlatformStats = useMemo(() => {
         </div>
       </div>
 
-     <div className="mt-6 border-t pt-5">
+<div className="mt-6 border-t pt-5">
   <div className="mb-3 text-sm font-semibold text-gray-700">
     平台统计
   </div>
@@ -2692,176 +2805,224 @@ const hongKongPlatformStats = useMemo(() => {
     </div>
 
 
-    {/* =================================================
-        香港 CNY
-    ================================================= */}
+   {/* =================================================
+    香港 CNY
+================================================= */}
 
-    <div className="mb-5">
+<div className="mb-5">
 
-      <div className="mb-3 text-xs font-medium text-gray-500">
-        CNY 统计
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
-
-        <div>
-          <div className="text-xs text-gray-400">
-            当前金额
-          </div>
-
-          <div className="mt-1 text-lg font-semibold text-gray-900">
-            ¥{formatMoney(
-              hongKongStats.amount
-            )}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs text-gray-400">
-            成本
-          </div>
-
-          <div className="mt-1 text-lg font-medium text-gray-700">
-            ¥{formatMoney(
-              hongKongStats.cost
-            )}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs text-gray-400">
-            盈亏
-          </div>
-
-          <div
-            className={`
-              mt-1
-              text-lg
-              font-semibold
-              ${getProfitClass(
-                hongKongStats.profit
-              )}
-            `}
-          >
-            ¥{formatMoney(
-              hongKongStats.profit
-            )}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs text-gray-400">
-            收益率
-          </div>
-
-          <div
-            className={`
-              mt-1
-              text-lg
-              font-semibold
-              ${getProfitClass(
-                hongKongStats.profitRate
-              )}
-            `}
-          >
-            {formatPercent(
-              hongKongStats.profitRate
-            )}
-          </div>
-        </div>
-
-       <div className="mt-6 border-t pt-5">
-  <div className="mb-3 text-sm font-semibold text-gray-700">
-    平台统计 · 本币
+  <div className="mb-3 text-xs font-medium text-gray-500">
+    CNY 统计
   </div>
 
-  <div className="overflow-x-auto">
-    <table className="w-full text-sm">
-      <thead>
-        <tr className="border-b text-left text-gray-500">
-          <th className="py-2">平台</th>
-          <th className="py-2">本币</th>
-          <th className="py-2 text-right">当前金额</th>
-          <th className="py-2 text-right">成本</th>
-          <th className="py-2 text-right">盈亏</th>
-          <th className="py-2 text-right">收益率</th>
-        </tr>
-      </thead>
+  {/* 四项总体指标 */}
+  <div className="grid grid-cols-2 gap-4">
 
-      <tbody>
-        {hongKongPlatformStats.map((item) => {
-          const symbol =
-            item.currency === "HKD"
-              ? "HK$"
-              : item.currency === "USD"
-                ? "$"
-                : `${item.currency} `;
+    <div>
+      <div className="text-xs text-gray-400">
+        当前金额
+      </div>
 
-          return (
-            <tr
-              key={`${item.platform}-${item.currency}`}
-              className="border-b last:border-0"
-            >
-              <td className="py-2 font-medium text-gray-800">
-                {item.platform}
-              </td>
+      <div className="mt-1 text-lg font-semibold text-gray-900">
+        ¥{formatMoney(
+          hongKongStats.amount
+        )}
+      </div>
+    </div>
 
-              <td className="py-2 text-gray-500">
-                {item.currency}
-              </td>
+    <div>
+      <div className="text-xs text-gray-400">
+        成本
+      </div>
 
-              <td className="py-2 text-right">
-                {symbol}
-                {formatNativeMoney(item.amount)}
-              </td>
+      <div className="mt-1 text-lg font-medium text-gray-700">
+        ¥{formatMoney(
+          hongKongStats.cost
+        )}
+      </div>
+    </div>
 
-              <td className="py-2 text-right">
-                {symbol}
-                {formatNativeMoney(item.cost)}
-              </td>
+    <div>
+      <div className="text-xs text-gray-400">
+        盈亏
+      </div>
 
-              <td
-                className={`py-2 text-right ${
-                  item.profit >= 0
-                    ? "text-green-600"
-                    : "text-red-600"
-                }`}
-              >
-                {item.profit >= 0 ? "+" : "-"}
-                {symbol}
-                {formatNativeMoney(
-                  Math.abs(item.profit)
-                )}
-              </td>
+      <div
+        className={`
+          mt-1
+          text-lg
+          font-semibold
+          ${getProfitClass(
+            hongKongStats.profit
+          )}
+        `}
+      >
+        ¥{formatMoney(
+          hongKongStats.profit
+        )}
+      </div>
+    </div>
 
-              <td
-                className={`py-2 text-right ${
-                  item.profitRate >= 0
-                    ? "text-green-600"
-                    : "text-red-600"
-                }`}
-              >
-                {item.profitRate >= 0 ? "+" : ""}
-                {item.profitRate.toFixed(2)}%
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div>
+      <div className="text-xs text-gray-400">
+        收益率
+      </div>
+
+      <div
+        className={`
+          mt-1
+          text-lg
+          font-semibold
+          ${getProfitClass(
+            hongKongStats.profitRate
+          )}
+        `}
+      >
+        {formatPercent(
+          hongKongStats.profitRate
+        )}
+      </div>
+    </div>
+
   </div>
 </div>
-  
-      </div>
+  {/* =================================================
+      香港平台统计
+  ================================================= */}
+
+  <div className="mt-6 border-t pt-5">
+
+    <div className="mb-3 text-sm font-semibold text-gray-700">
+      平台统计 · 本币
+    </div>
+
+    <div className="overflow-x-auto">
+
+      <table className="w-full text-sm">
+
+        <thead>
+          <tr className="border-b text-left text-gray-500">
+
+            <th className="py-2">
+              平台
+            </th>
+
+            <th className="py-2">
+              本币
+            </th>
+
+            <th className="py-2 text-right">
+              当前金额
+            </th>
+
+            <th className="py-2 text-right">
+              成本
+            </th>
+
+            <th className="py-2 text-right">
+              盈亏
+            </th>
+
+            <th className="py-2 text-right">
+              收益率
+            </th>
+
+          </tr>
+        </thead>
+
+        <tbody>
+
+          {hongKongPlatformStats.map(
+            (item) => {
+
+              const symbol =
+                item.currency === "HKD"
+                  ? "HK$"
+                  : item.currency === "USD"
+                    ? "$"
+                    : `${item.currency} `;
+
+              return (
+                <tr
+                  key={`${item.platform}-${item.currency}`}
+                  className="border-b last:border-0"
+                >
+
+                  <td className="py-2 font-medium text-gray-800">
+                    {item.platform}
+                  </td>
+
+                  <td className="py-2 text-gray-500">
+                    {item.currency}
+                  </td>
+
+                  <td className="py-2 text-right">
+                    {symbol}
+                    {formatNativeMoney(
+                      item.amount
+                    )}
+                  </td>
+
+                  <td className="py-2 text-right">
+                    {symbol}
+                    {formatNativeMoney(
+                      item.cost
+                    )}
+                  </td>
+
+                  <td
+                    className={`py-2 text-right ${
+                      item.profit >= 0
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }`}
+                  >
+                    {item.profit >= 0
+                      ? "+"
+                      : "-"}
+                    {symbol}
+                    {formatNativeMoney(
+                      Math.abs(
+                        item.profit
+                      )
+                    )}
+                  </td>
+
+                  <td
+                    className={`py-2 text-right ${
+                      item.profitRate >= 0
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }`}
+                  >
+                    {item.profitRate >= 0
+                      ? "+"
+                      : ""}
+                    {item.profitRate.toFixed(2)}%
+                  </td>
+
+                </tr>
+              );
+            }
+          )}
+
+        </tbody>
+
+      </table>
 
     </div>
 
+  </div>
 
-    {/* =================================================
-        香港本币
-    ================================================= */}
+</div>
 
-    <div>
+
+{/* =================================================
+    香港本币
+================================================= */}
+
+<div>
+
   <div className="mb-3 text-xs font-medium text-gray-500">
     本币统计
   </div>
@@ -2881,7 +3042,7 @@ const hongKongPlatformStats = useMemo(() => {
       ========================= */}
 
       {hongKongStats.native.map(
-        native => (
+        (native) => (
           <div
             key={native.currency}
             className="
@@ -2902,26 +3063,33 @@ const hongKongPlatformStats = useMemo(() => {
             <div className="text-right">
 
               <div className="text-sm font-semibold text-gray-900">
+
                 {native.currency === "USD"
                   ? "$"
                   : native.currency === "HKD"
                     ? "HK$"
                     : ""}
+
                 {formatNativeMoney(
                   native.amount
                 )}
+
               </div>
 
               <div className="mt-0.5 text-[11px] text-gray-400">
+
                 成本：
+
                 {native.currency === "USD"
                   ? "$"
                   : native.currency === "HKD"
                     ? "HK$"
                     : ""}
+
                 {formatNativeMoney(
                   native.cost
                 )}
+
               </div>
 
             </div>
@@ -2929,7 +3097,6 @@ const hongKongPlatformStats = useMemo(() => {
           </div>
         )
       )}
-
       {/* =========================
           USD → HKD
           
