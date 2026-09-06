@@ -1243,6 +1243,153 @@ export default function AssetManagementPage() {
       filteredActiveHoldings,
     ]);
 
+
+// ===================================================
+// 大陆资产统计
+// ===================================================
+
+const mainlandStats = useMemo(() => {
+  const amount = mainlandHoldings.reduce(
+    (total, item) =>
+      total + Number(item.amount || 0),
+    0
+  );
+
+  const cost = mainlandHoldings.reduce(
+    (total, item) =>
+      total + Number(item.cost || 0),
+    0
+  );
+
+  const profit = mainlandHoldings.reduce(
+    (total, item) =>
+      total + Number(item.profit || 0),
+    0
+  );
+
+  const profitRate =
+    cost > 0
+      ? (profit / cost) * 100
+      : 0;
+
+  return {
+    count: mainlandHoldings.length,
+    amount,
+    cost,
+    profit,
+    profitRate,
+  };
+}, [
+  mainlandHoldings,
+]);
+
+// ===================================================
+// 香港资产 CNY 统计
+// ===================================================
+
+const hongKongStats = useMemo(() => {
+  const amount = hongKongHoldings.reduce(
+    (total, item) =>
+      total + Number(item.amount || 0),
+    0
+  );
+
+  const cost = hongKongHoldings.reduce(
+    (total, item) =>
+      total + Number(item.cost || 0),
+    0
+  );
+
+  const profit = hongKongHoldings.reduce(
+    (total, item) =>
+      total + Number(item.profit || 0),
+    0
+  );
+
+  const profitRate =
+    cost > 0
+      ? (profit / cost) * 100
+      : 0;
+
+  // =================================================
+  // 香港本币：
+  // 必须按照币种分别统计
+  //
+  // USD / HKD / EUR / GBP / JPY
+  // 不能直接混加
+  // =================================================
+
+  const nativeMap =
+    new Map<
+      string,
+      {
+        amount: number;
+        cost: number;
+      }
+    >();
+
+  for (
+    const item of hongKongHoldings
+  ) {
+    const currency =
+      String(
+        item.native_currency || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (!currency) {
+      continue;
+    }
+
+    const current =
+      nativeMap.get(currency) || {
+        amount: 0,
+        cost: 0,
+      };
+
+    current.amount += Number(
+      item.native_amount || 0
+    );
+
+    current.cost += Number(
+      item.native_cost || 0
+    );
+
+    nativeMap.set(
+      currency,
+      current
+    );
+  }
+
+  const native = Array.from(
+    nativeMap.entries()
+  )
+    .map(
+      ([currency, values]) => ({
+        currency,
+        amount: values.amount,
+        cost: values.cost,
+      })
+    )
+    .sort(
+      (a, b) =>
+        b.amount - a.amount
+    );
+
+  return {
+    count: hongKongHoldings.length,
+    amount,
+    cost,
+    profit,
+    profitRate,
+    native,
+  };
+}, [
+  hongKongHoldings,
+]);
+
+
   // ===================================================
   // 新增
   // ===================================================
@@ -2131,47 +2278,324 @@ export default function AssetManagementPage() {
 
           </div>
 
-          <div
-            className="
-              text-sm
-              text-gray-500
-            "
-          >
+         {/* =================================================
+    区域统计
+================================================= */}
 
-            Current Assets：
+<div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
 
-            <span
-              className="
-                ml-1
-                font-semibold
-                text-gray-900
-              "
-            >
-              {filteredActiveHoldings.length}
-            </span>
+  {/* =================================================
+      大陆资产
+  ================================================= */}
 
-            <span
-              className="
-                mx-2
-                text-gray-300
-              "
-            >
-              |
-            </span>
+  <div
+    className="
+      rounded-xl
+      border
+      border-gray-200
+      bg-white
+      p-5
+      shadow-sm
+    "
+  >
 
-            Total：
+    <div className="mb-4 flex items-center justify-between">
 
-            <span
-              className="
-                ml-1
-                font-semibold
-                text-gray-900
-              "
-            >
-              ¥{formatMoney(activeTotal)}
-            </span>
+      <div>
+        <div className="text-base font-semibold text-gray-900">
+          大陆资产
+        </div>
 
+        <div className="mt-1 text-xs text-gray-500">
+          CNY
+        </div>
+      </div>
+
+      <div
+        className="
+          rounded-full
+          bg-gray-50
+          px-3
+          py-1
+          text-xs
+          font-medium
+          text-gray-600
+        "
+      >
+        {mainlandStats.count} Assets
+      </div>
+
+    </div>
+
+    <div className="grid grid-cols-2 gap-4">
+
+      <div>
+        <div className="text-xs text-gray-400">
+          当前金额
+        </div>
+
+        <div className="mt-1 text-lg font-semibold text-gray-900">
+          ¥{formatMoney(
+            mainlandStats.amount
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs text-gray-400">
+          成本
+        </div>
+
+        <div className="mt-1 text-lg font-medium text-gray-700">
+          ¥{formatMoney(
+            mainlandStats.cost
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs text-gray-400">
+          盈亏
+        </div>
+
+        <div
+          className={`
+            mt-1
+            text-lg
+            font-semibold
+            ${getProfitClass(
+              mainlandStats.profit
+            )}
+          `}
+        >
+          ¥{formatMoney(
+            mainlandStats.profit
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs text-gray-400">
+          收益率
+        </div>
+
+        <div
+          className={`
+            mt-1
+            text-lg
+            font-semibold
+            ${getProfitClass(
+              mainlandStats.profitRate
+            )}
+          `}
+        >
+          {formatPercent(
+            mainlandStats.profitRate
+          )}
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+
+  {/* =================================================
+      香港资产
+  ================================================= */}
+
+  <div
+    className="
+      rounded-xl
+      border
+      border-gray-200
+      bg-white
+      p-5
+      shadow-sm
+    "
+  >
+
+    <div className="mb-4 flex items-center justify-between">
+
+      <div>
+        <div className="text-base font-semibold text-gray-900">
+          香港资产
+        </div>
+
+        <div className="mt-1 text-xs text-gray-500">
+          CNY + 本币
+        </div>
+      </div>
+
+      <div
+        className="
+          rounded-full
+          bg-gray-50
+          px-3
+          py-1
+          text-xs
+          font-medium
+          text-gray-600
+        "
+      >
+        {hongKongStats.count} Assets
+      </div>
+
+    </div>
+
+
+    {/* =================================================
+        香港 CNY
+    ================================================= */}
+
+    <div className="mb-5">
+
+      <div className="mb-3 text-xs font-medium text-gray-500">
+        CNY 统计
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+
+        <div>
+          <div className="text-xs text-gray-400">
+            当前金额
           </div>
+
+          <div className="mt-1 text-lg font-semibold text-gray-900">
+            ¥{formatMoney(
+              hongKongStats.amount
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs text-gray-400">
+            成本
+          </div>
+
+          <div className="mt-1 text-lg font-medium text-gray-700">
+            ¥{formatMoney(
+              hongKongStats.cost
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs text-gray-400">
+            盈亏
+          </div>
+
+          <div
+            className={`
+              mt-1
+              text-lg
+              font-semibold
+              ${getProfitClass(
+                hongKongStats.profit
+              )}
+            `}
+          >
+            ¥{formatMoney(
+              hongKongStats.profit
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs text-gray-400">
+            收益率
+          </div>
+
+          <div
+            className={`
+              mt-1
+              text-lg
+              font-semibold
+              ${getProfitClass(
+                hongKongStats.profitRate
+              )}
+            `}
+          >
+            {formatPercent(
+              hongKongStats.profitRate
+            )}
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+
+    {/* =================================================
+        香港本币
+    ================================================= */}
+
+    <div>
+
+      <div className="mb-3 text-xs font-medium text-gray-500">
+        本币统计
+      </div>
+
+      {hongKongStats.native.length === 0 ? (
+
+        <div className="text-sm text-gray-400">
+          暂无本币数据
+        </div>
+
+      ) : (
+
+        <div className="space-y-2">
+
+          {hongKongStats.native.map(
+            native => (
+              <div
+                key={native.currency}
+                className="
+                  flex
+                  items-center
+                  justify-between
+                  rounded-lg
+                  bg-gray-50
+                  px-3
+                  py-2.5
+                "
+              >
+
+                <div className="font-medium text-gray-700">
+                  {native.currency}
+                </div>
+
+                <div className="text-right">
+
+                  <div className="text-sm font-semibold text-gray-900">
+                    {formatNativeMoney(
+                      native.amount
+                    )}
+                  </div>
+
+                  <div className="mt-0.5 text-[11px] text-gray-400">
+                    成本：
+                    {formatNativeMoney(
+                      native.cost
+                    )}
+                  </div>
+
+                </div>
+
+              </div>
+            )
+          )}
+
+        </div>
+
+      )}
+
+    </div>
+
+  </div>
+
+</div>
 
         </div>
 
