@@ -196,7 +196,8 @@ function formatMoney(
 }
 
 function formatNumber(
-  value: any
+  value: number,
+  decimals = 2
 ) {
 
   const n =
@@ -209,8 +210,8 @@ function formatNumber(
   return n.toLocaleString(
     "zh-CN",
     {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 4,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
     }
   );
 }
@@ -2596,6 +2597,9 @@ const mainlandPlatformStats = useMemo(() => {
     "
   >
 
+
+
+
     <div className="mb-4 flex items-center justify-between">
 
       <div>
@@ -2605,6 +2609,10 @@ const mainlandPlatformStats = useMemo(() => {
 
         <div className="mt-1 text-xs text-gray-500">
           CNY
+        </div>
+
+        <div className="mt-1 text-xs text-gray-500">
+          CNY 统计
         </div>
       </div>
 
@@ -2691,6 +2699,7 @@ const mainlandPlatformStats = useMemo(() => {
           )}
         </div>
       </div>
+ </div>
 
 <div className="mt-6 border-t pt-5">
   <div className="mb-3 text-sm font-semibold text-gray-700">
@@ -2756,7 +2765,7 @@ const mainlandPlatformStats = useMemo(() => {
 </div>
 
 
-    </div>
+
 
   </div>
 
