@@ -47,6 +47,7 @@ type Holding = {
 
   amount: number;
   cost: number;
+  fee_cost: number;
 
   profit: number;
   profit_rate: number;
@@ -66,6 +67,7 @@ type Holding = {
   native_currency?: Currency | null;
   native_amount?: number | null;
   native_cost?: number | null;
+  native_fee_cost?: number | null;
 };
 
 type HoldingNativeCurrency = {
@@ -74,6 +76,7 @@ type HoldingNativeCurrency = {
   native_currency: Currency;
   native_amount: number | null;
   native_cost: number | null;
+  fee_cost: number | null;
   updated_at: string | null;
 };
 
@@ -303,6 +306,22 @@ export default function InvestmentTransactionsPage() {
   const [cashAssetCode, setCashAssetCode] =
     useState("");
 
+  // SELL → Cash Holding_native_currency 可人工调整的原币金额/成本
+  // 空值时默认使用「卖出成交金额 - 手续费」。
+  const [cashNativeAmount, setCashNativeAmount] =
+    useState("");
+
+  const [cashNativeCost, setCashNativeCost] =
+    useState("");
+
+  // CNY SELL → Cash Holding.amount / cost 可人工调整。
+  // 非 CNY SELL 时由 Cash Holding_native_currency × FX 自动计算。
+  const [cashCnyAmount, setCashCnyAmount] =
+    useState("");
+
+  const [cashCnyCost, setCashCnyCost] =
+    useState("");
+
   // ===================================================
   // 备注
   // ===================================================
@@ -335,6 +354,7 @@ export default function InvestmentTransactionsPage() {
                 "category",
                 "amount",
                 "cost",
+                "fee_cost",
                 "profit",
                 "profit_rate",
                 "currency",
@@ -381,6 +401,7 @@ export default function InvestmentTransactionsPage() {
                 "native_currency",
                 "native_amount",
                 "native_cost",
+                "fee_cost",
                 "updated_at",
               ].join(",")
             )
@@ -430,6 +451,12 @@ export default function InvestmentTransactionsPage() {
                 native_cost:
                   native?.native_cost ??
                   null,
+                fee_cost:
+                  holding.fee_cost ??
+                  0,
+                native_fee_cost:
+                  native?.fee_cost ??
+                  0,
               };
             }
           );
@@ -647,6 +674,11 @@ export default function InvestmentTransactionsPage() {
     setShares("");
     setFee("");
 
+    setCashNativeAmount("");
+    setCashNativeCost("");
+    setCashCnyAmount("");
+    setCashCnyCost("");
+
     setFxRate(null);
 
     setCashHoldingResult(null);
@@ -681,6 +713,11 @@ export default function InvestmentTransactionsPage() {
     setShares("");
     setFee("");
 
+    setCashNativeAmount("");
+    setCashNativeCost("");
+    setCashCnyAmount("");
+    setCashCnyCost("");
+
     setFxRate(null);
 
     setCashHoldingResult(null);
@@ -703,6 +740,11 @@ export default function InvestmentTransactionsPage() {
     setTradePrice("");
     setShares("");
     setFee("");
+
+    setCashNativeAmount("");
+    setCashNativeCost("");
+    setCashCnyAmount("");
+    setCashCnyCost("");
 
     setCashHoldingResult(null);
 
@@ -950,7 +992,8 @@ export default function InvestmentTransactionsPage() {
   // ===================================================
   // BUY 自动计算交易金额
   //
-  // 交易金额 = 买入单价 × Shares + 手续费
+  // 交易金额 = 买入单价 × Shares
+  // 手续费单独记录，不计入成交金额。
   //
   // 用户仍然可以手动修改交易金额。
   // ===================================================
@@ -968,16 +1011,12 @@ export default function InvestmentTransactionsPage() {
     const shareNumber =
       toNumber(shares);
 
-    const feeNumber =
-      toNumber(fee);
-
     if (
       price > 0 &&
       shareNumber > 0
     ) {
       const calculatedAmount =
-        price * shareNumber +
-        feeNumber;
+        price * shareNumber;
 
       setTradeAmount(
         String(
@@ -1173,6 +1212,118 @@ export default function InvestmentTransactionsPage() {
     ]);
 
   // ===================================================
+  // SELL 后剩余持仓市值预览
+  // ===================================================
+
+  const sellMarketPriceNative =
+    useMemo(() => {
+      if (transactionType !== "SELL") {
+        return 0;
+      }
+
+      return (
+        toNumber(selectedHolding?.nav) ||
+        toNumber(tradePrice)
+      );
+    }, [
+      transactionType,
+      selectedHolding,
+      tradePrice,
+    ]);
+
+  const remainingMarketValueNative =
+    useMemo(() => {
+      if (transactionType !== "SELL") {
+        return 0;
+      }
+
+      return Math.max(
+        0,
+        remainingShares *
+          sellMarketPriceNative
+      );
+    }, [
+      transactionType,
+      remainingShares,
+      sellMarketPriceNative,
+    ]);
+
+  const defaultCashNativeValuePreview =
+    Math.max(
+      0,
+      toNumber(tradeAmount) - toNumber(fee)
+    );
+
+  const finalCashNativeAmountPreview =
+    Math.max(
+      0,
+      toNumber(cashNativeAmount) > 0
+        ? toNumber(cashNativeAmount)
+        : defaultCashNativeValuePreview
+    );
+
+  const defaultCashCnyValuePreview = Math.max(
+    0,
+    tradeValueCny - toNumber(fee)
+  );
+
+  const finalCashCnyAmountPreview =
+    currency === "CNY"
+      ? Math.max(
+          0,
+          cashCnyAmount !== ""
+            ? toNumber(cashCnyAmount)
+            : defaultCashCnyValuePreview
+        )
+      : Math.max(
+          0,
+          finalCashNativeAmountPreview *
+            (fxRate || 0)
+        );
+
+  const finalCashCnyCostPreview =
+    currency === "CNY"
+      ? Math.max(
+          0,
+          cashCnyCost !== ""
+            ? toNumber(cashCnyCost)
+            : defaultCashCnyValuePreview
+        )
+      : Math.max(
+          0,
+          (cashNativeCost !== ""
+            ? toNumber(cashNativeCost)
+            : defaultCashNativeValuePreview) *
+            (fxRate || 0)
+        );
+
+  // ===================================================
+  // SELL 后剩余持仓市值预览
+  // ===================================================
+
+  const remainingMarketValueCny =
+    useMemo(() => {
+      if (transactionType !== "SELL") {
+        return 0;
+      }
+
+      if (currency === "CNY") {
+        return remainingMarketValueNative;
+      }
+
+      return Math.max(
+        0,
+        remainingMarketValueNative *
+          (fxRate || 0)
+      );
+    }, [
+      transactionType,
+      currency,
+      remainingMarketValueNative,
+      fxRate,
+    ]);
+
+  // ===================================================
   // SELL 默认 Cash Holding
   // ===================================================
 
@@ -1238,16 +1389,24 @@ export default function InvestmentTransactionsPage() {
       type,
       shareCount,
       tradeAmountNative,
+      grossTradeAmountNative,
+      grossTradeValueCny,
       tradeValueCny,
       sellCostBasisCny,
+      feeNative,
+      feeCny,
       currency,
     }: {
       holding: Holding;
       type: TransactionType;
       shareCount: number;
       tradeAmountNative: number;
+      grossTradeAmountNative: number;
+      grossTradeValueCny: number;
       tradeValueCny: number;
       sellCostBasisCny: number;
+      feeNative: number;
+      feeCny: number;
       currency: Currency;
     }) => {
       const oldShares =
@@ -1310,6 +1469,7 @@ export default function InvestmentTransactionsPage() {
               "native_currency",
               "native_amount",
               "native_cost",
+              "fee_cost",
               "updated_at",
             ].join(",")
           )
@@ -1354,6 +1514,8 @@ export default function InvestmentTransactionsPage() {
       let active =
         holding.active !== false;
 
+      let sellMarketPriceNative = 0;
+
       // -------------------------------------------------
       // BUY
       // -------------------------------------------------
@@ -1365,16 +1527,30 @@ export default function InvestmentTransactionsPage() {
 
         newCostCny =
           oldCostCny +
-          tradeValueCny;
+          grossTradeValueCny;
 
         newAmountCny =
           oldAmountCny +
-          tradeValueCny;
+          grossTradeValueCny;
 
         active = true;
       } else {
         // -------------------------------------------------
         // SELL
+        // -------------------------------------------------
+        //
+        // Shares / Cost / FeeCost 与市值 Amount 分开处理：
+        //
+        // 1. Shares：减去本次卖出 Shares
+        // 2. Cost：减去本次卖出 Shares 对应的历史成本
+        // 3. fee_cost：累计本次手续费，永不因为 Shares 清零而重置
+        // 4. Amount：SELL 后不再用「旧 Amount - 卖出成交金额」
+        //    而是用「SELL 后剩余 Shares × 最近价格」重新计算
+        //
+        // 最近价格优先读取数据库中当前 Holding.nav。
+        // Holding.nav 是 update-market/route 最近一次更新的市场价格。
+        // 如果数据库 nav 暂不可用，则退回页面当前 Holding.nav，
+        // 最后再退回本次 SELL 成交价，避免 Amount 被错误清零。
         // -------------------------------------------------
 
         newShares =
@@ -1385,9 +1561,66 @@ export default function InvestmentTransactionsPage() {
           oldCostCny -
           sellCostBasisCny;
 
+        if (
+          Math.abs(newShares) <
+          0.00000001
+        ) {
+          newShares = 0;
+        }
+
+        const {
+          data: latestHoldingPriceRow,
+          error: latestHoldingPriceError,
+        } = await supabase
+          .from("holdings")
+          .select("nav")
+          .eq("id", holding.id)
+          .maybeSingle();
+
+        if (latestHoldingPriceError) {
+          throw latestHoldingPriceError;
+        }
+
+        sellMarketPriceNative =
+          toNumber(
+            latestHoldingPriceRow?.nav
+          ) ||
+          toNumber(holding.nav) ||
+          (shareCount > 0
+            ? grossTradeAmountNative /
+              shareCount
+            : 0);
+
+        if (
+          newShares > 0 &&
+          sellMarketPriceNative <= 0
+        ) {
+          throw new Error(
+            `Holding ${holding.code} SELL 后无法取得有效的最近价格，不能重新计算剩余市值`
+          );
+        }
+
+        // 非 CNY 时，grossTradeValueCny / grossTradeAmountNative
+        // 就是本次交易使用的 native → CNY 汇率。
+        const cnyPerNative =
+          currency === "CNY"
+            ? 1
+            : grossTradeAmountNative > 0
+              ? grossTradeValueCny /
+                grossTradeAmountNative
+              : 0;
+
+        const remainingMarketValueNativeAfterSell =
+          newShares > 0
+            ? newShares *
+              sellMarketPriceNative
+            : 0;
+
         newAmountCny =
-          oldAmountCny -
-          tradeValueCny;
+          currency === "CNY"
+            ? remainingMarketValueNativeAfterSell
+            : remainingMarketValueNativeAfterSell *
+              cnyPerNative;
 
         if (
           Math.abs(newShares) <
@@ -1457,6 +1690,12 @@ export default function InvestmentTransactionsPage() {
           Math.round(newAmountCny)
         );
 
+      const oldFeeCny =
+        toNumber(holding.fee_cost);
+
+      const newFeeCny =
+        oldFeeCny + feeCny;
+
       const profit =
         roundedAmount -
         roundedCost;
@@ -1476,6 +1715,8 @@ export default function InvestmentTransactionsPage() {
           ),
 
         cost: roundedCost,
+
+        fee_cost: newFeeCny,
 
         amount:
           roundedAmount,
@@ -1539,32 +1780,46 @@ export default function InvestmentTransactionsPage() {
       let newNativeCost =
         oldNativeCost;
 
+      const oldNativeFeeCost =
+        toNumber(native.fee_cost);
+
+      const newNativeFeeCost =
+        oldNativeFeeCost + feeNative;
+
       if (
         type === "BUY"
       ) {
         newNativeAmount =
           oldNativeAmount +
-          tradeAmountNative;
+          grossTradeAmountNative;
 
         newNativeCost =
           oldNativeCost +
-          tradeAmountNative;
+          grossTradeAmountNative;
       } else {
         // -------------------------------------------------
         // SELL native_amount
+        // -------------------------------------------------
         //
-        // 按实际卖出成交金额扣减
+        // SELL 后 native_amount 表示「剩余持仓的当前/最近市值」，
+        // 因此不能继续用 oldNativeAmount - 本次卖出成交金额。
+        //
+        // 与 holdings.amount 使用完全相同的最近价格逻辑：
+        // remaining Shares × Holding.nav。
         // -------------------------------------------------
 
         newNativeAmount =
-          oldNativeAmount -
-          tradeAmountNative;
+          newShares > 0
+            ? newShares *
+              sellMarketPriceNative
+            : 0;
 
         // -------------------------------------------------
         // SELL native_cost
         //
         // 按卖出 Shares / 原持仓 Shares
-        // 比例扣减历史原币成本
+        // 比例扣减历史原币成本。
+        // 这里绝对不能使用市场价格重新计算 cost。
         // -------------------------------------------------
 
         const nativeCostBasis =
@@ -1635,6 +1890,9 @@ export default function InvestmentTransactionsPage() {
               newNativeCost
             ),
 
+          fee_cost:
+            newNativeFeeCost,
+
           updated_at:
             new Date().toISOString(),
         })
@@ -1663,6 +1921,9 @@ export default function InvestmentTransactionsPage() {
                   oldCostCny
                 )
               ),
+
+            fee_cost:
+              oldFeeCny,
 
             amount:
               Math.max(
@@ -1742,6 +2003,11 @@ export default function InvestmentTransactionsPage() {
               )
             ),
 
+          fee_cost:
+            toNumber(
+              holding.fee_cost
+            ),
+
           profit:
             Math.round(
               toNumber(
@@ -1803,6 +2069,11 @@ export default function InvestmentTransactionsPage() {
                 holding.native_cost
               ),
 
+            fee_cost:
+              toNumber(
+                holding.native_fee_cost
+              ),
+
             updated_at:
               new Date().toISOString(),
           })
@@ -1837,6 +2108,8 @@ export default function InvestmentTransactionsPage() {
       nav,
       platform,
       nativeAmount,
+      feeNative,
+      feeCny,
     }: {
       code: string;
       name: string;
@@ -1849,6 +2122,8 @@ export default function InvestmentTransactionsPage() {
       nav: number;
       platform: string;
       nativeAmount: number;
+      feeNative: number;
+      feeCny: number;
     }) => {
       if (!code.trim()) {
         throw new Error(
@@ -1944,6 +2219,9 @@ export default function InvestmentTransactionsPage() {
               costCny
             ),
 
+          fee_cost:
+            feeCny,
+
           profit: 0,
 
           profit_rate: 0,
@@ -2012,6 +2290,9 @@ export default function InvestmentTransactionsPage() {
           native_cost:
             nativeAmount,
 
+          fee_cost:
+            feeNative,
+
           updated_at:
             new Date().toISOString(),
         });
@@ -2042,7 +2323,9 @@ export default function InvestmentTransactionsPage() {
       market,
       platform,
       cnyAmount,
+      cnyCost,
       nativeAmount,
+      nativeCost,
       fxRate,
     }: {
       code: string;
@@ -2050,7 +2333,9 @@ export default function InvestmentTransactionsPage() {
       market: string;
       platform: string;
       cnyAmount: number;
+      cnyCost: number;
       nativeAmount: number;
+      nativeCost: number;
       fxRate: number;
     }) => {
       if (
@@ -2109,7 +2394,7 @@ export default function InvestmentTransactionsPage() {
                   toNumber(
                     existing.cost
                   ) +
-                    cnyAmount
+                    cnyCost
                 ),
 
               currency: "CNY",
@@ -2154,8 +2439,10 @@ export default function InvestmentTransactionsPage() {
 
               cost:
                 Math.round(
-                  cnyAmount
+                  cnyCost
                 ),
+
+              fee_cost: 0,
 
               profit: 0,
 
@@ -2276,7 +2563,7 @@ export default function InvestmentTransactionsPage() {
                 toNumber(
                   existing.cost
                 ) +
-                  cnyAmount
+                  cnyCost
               ),
 
             currency: "CNY",
@@ -2322,7 +2609,7 @@ export default function InvestmentTransactionsPage() {
 
             cost:
               Math.round(
-                cnyAmount
+                cnyCost
               ),
 
             profit: 0,
@@ -2377,7 +2664,7 @@ export default function InvestmentTransactionsPage() {
           "holding_native_currency"
         )
         .select(
-          "id, holding_id, native_currency, native_amount, native_cost, updated_at"
+          "id, holding_id, native_currency, native_amount, native_cost, fee_cost, updated_at"
         )
         .eq(
           "holding_id",
@@ -2427,7 +2714,7 @@ export default function InvestmentTransactionsPage() {
               toNumber(
                 native.native_cost
               ) +
-              nativeAmount,
+              nativeCost,
 
             updated_at:
               new Date().toISOString(),
@@ -2499,7 +2786,7 @@ export default function InvestmentTransactionsPage() {
               nativeAmount,
 
             native_cost:
-              nativeAmount,
+              nativeCost,
 
             updated_at:
               new Date().toISOString(),
@@ -2770,9 +3057,6 @@ export default function InvestmentTransactionsPage() {
 
       validate();
 
-      const amountNumber =
-        toNumber(tradeAmount);
-
       const priceNumber =
         toNumber(tradePrice);
 
@@ -2782,8 +3066,32 @@ export default function InvestmentTransactionsPage() {
       const feeNumber =
         toNumber(fee);
 
+      const grossTradeAmountNative =
+        priceNumber * shareNumber;
+
+      // BUY 的交易金额永远以「单价 × Shares」为准，
+      // 不读取可能曾经包含手续费的 tradeAmount 状态。
+      const amountNumber =
+        transactionType === "BUY"
+          ? grossTradeAmountNative
+          : toNumber(tradeAmount);
+
+      const grossTradeValueCny =
+        currency === "CNY"
+          ? grossTradeAmountNative
+          : grossTradeAmountNative *
+            (fxRate || 0);
+
+      const feeCny =
+        currency === "CNY"
+          ? feeNumber
+          : feeNumber *
+            (fxRate || 0);
+
       const finalCny =
-        tradeValueCny;
+        currency === "CNY"
+          ? amountNumber
+          : amountNumber * (fxRate || 0);
 
       const finalCostBasis =
         transactionType === "SELL"
@@ -2809,6 +3117,70 @@ export default function InvestmentTransactionsPage() {
               platform
             )
           : null;
+
+      // SELL → Cash Holding_native_currency
+      // 原币金额/成本允许人工调整；未调整时默认净卖出金额。
+      const defaultCashNativeValue = Math.max(
+        0,
+        amountNumber - feeNumber
+      );
+
+      const finalCashNativeAmount =
+        transactionType === "SELL" &&
+        currency !== "CNY"
+          ? Math.max(
+              0,
+              cashNativeAmount !== ""
+                ? toNumber(cashNativeAmount)
+                : defaultCashNativeValue
+            )
+          : defaultCashNativeValue;
+
+      const finalCashNativeCost =
+        transactionType === "SELL" &&
+        currency !== "CNY"
+          ? Math.max(
+              0,
+              cashNativeCost !== ""
+                ? toNumber(cashNativeCost)
+                : defaultCashNativeValue
+            )
+          : defaultCashNativeValue;
+
+      // Cash Holding.amount / cost：
+      // CNY SELL → 用户可直接修改 CNY amount / cost；这里就是最终写入值。
+      // 非 CNY SELL → 不允许直接修改 CNY amount / cost；
+      //              最终值严格来自 Cash Holding_native_currency.native_amount / native_cost × FX。
+      const defaultCashCnyValue = Math.max(
+        0,
+        finalCny - feeCny
+      );
+
+      const finalCashCnyAmount =
+        currency === "CNY"
+          ? Math.max(
+              0,
+              toNumber(cashCnyAmount) > 0
+                ? toNumber(cashCnyAmount)
+                : defaultCashCnyValue
+            )
+          : Math.max(
+              0,
+              finalCashNativeAmount * (fxRate || 0)
+            );
+
+      const finalCashCnyCost =
+        currency === "CNY"
+          ? Math.max(
+              0,
+              toNumber(cashCnyCost) > 0
+                ? toNumber(cashCnyCost)
+                : defaultCashCnyValue
+            )
+          : Math.max(
+              0,
+              finalCashNativeCost * (fxRate || 0)
+            );
 
       // =================================================
       // 1. 写 investment_transactions
@@ -2879,7 +3251,7 @@ export default function InvestmentTransactionsPage() {
           cost_basis_cny:
             transactionType === "SELL"
               ? finalCostBasis
-              : tradeValueCny,
+              : grossTradeValueCny,
 
           cash_asset_code:
             finalCashAssetCode,
@@ -2920,11 +3292,23 @@ export default function InvestmentTransactionsPage() {
             tradeAmountNative:
               amountNumber,
 
+            grossTradeAmountNative:
+              grossTradeAmountNative,
+
+            grossTradeValueCny:
+              grossTradeValueCny,
+
             tradeValueCny:
               finalCny,
 
             sellCostBasisCny:
               0,
+
+            feeNative:
+              feeNumber,
+
+            feeCny:
+              feeCny,
 
             currency,
           });
@@ -2951,10 +3335,10 @@ export default function InvestmentTransactionsPage() {
               finalCategory!,
 
             amountCny:
-              finalCny,
+              grossTradeValueCny,
 
             costCny:
-              finalCny,
+              grossTradeValueCny,
 
             shares:
               shareNumber,
@@ -2968,7 +3352,13 @@ export default function InvestmentTransactionsPage() {
               platform.trim(),
 
             nativeAmount:
-              amountNumber,
+              grossTradeAmountNative,
+
+            feeNative:
+              feeNumber,
+
+            feeCny:
+              feeCny,
           });
         }
 
@@ -3019,11 +3409,23 @@ export default function InvestmentTransactionsPage() {
             tradeAmountNative:
               amountNumber,
 
+            grossTradeAmountNative:
+              grossTradeAmountNative,
+
+            grossTradeValueCny:
+              grossTradeValueCny,
+
             tradeValueCny:
               finalCny,
 
             sellCostBasisCny:
               finalCostBasis,
+
+            feeNative:
+              feeNumber,
+
+            feeCny:
+              feeCny,
 
             currency,
           });
@@ -3053,10 +3455,16 @@ export default function InvestmentTransactionsPage() {
                   platform.trim(),
 
                 cnyAmount:
-                  finalCny,
+                  finalCashCnyAmount,
+
+                cnyCost:
+                  finalCashCnyCost,
 
                 nativeAmount:
-                  amountNumber,
+                  finalCashNativeAmount,
+
+                nativeCost:
+                  finalCashNativeCost,
 
                 fxRate:
                   currency === "CNY"
@@ -3951,22 +4359,32 @@ export default function InvestmentTransactionsPage() {
                   type="number"
                   min="0"
                   step="any"
-                  value={
-                    tradeAmount
+                  value={tradeAmount}
+                  readOnly={
+                    transactionType === "BUY"
                   }
-                  onChange={(e) =>
-                    setTradeAmount(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  onChange={(e) => {
+                    if (
+                      transactionType !==
+                      "BUY"
+                    ) {
+                      setTradeAmount(
+                        e.target.value
+                      );
+                    }
+                  }}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                    transactionType === "BUY"
+                      ? "bg-slate-50"
+                      : ""
+                  }`}
                 />
 
                 {transactionType ===
                 "BUY" ? (
                   <p className="mt-1 text-xs text-slate-500">
-                    自动计算：买入单价 × Shares + 手续费。
-                    你仍然可以手动修改这个金额。
+                    自动计算：买入单价 × Shares（不含手续费）。
+                    手续费单独记录。
                   </p>
                 ) : (
                   <p className="mt-1 text-xs text-slate-500">
@@ -4262,6 +4680,30 @@ export default function InvestmentTransactionsPage() {
                             : "active = true"}
                         </div>
                       </div>
+
+                      <div>
+                        <div className="text-xs text-red-700">
+                          卖出后 Amount（按最近价格）
+                        </div>
+
+                        <div className="mt-1 text-lg font-semibold">
+                          ¥
+                          {formatNumber(
+                            remainingMarketValueCny,
+                            2
+                          )}
+                        </div>
+
+                        <div className="text-xs text-slate-500">
+                          最近价格：{nativeCurrency} {formatNumber(
+                            sellMarketPriceNative,
+                            4
+                          )}
+                          <br />
+                          剩余 Shares × 最近价格；
+                          Cost / fee_cost 不受市场价格影响。
+                        </div>
+                      </div>
                     </div>
 
                     <p className="mt-3 text-xs text-slate-500">
@@ -4291,15 +4733,13 @@ export default function InvestmentTransactionsPage() {
                               nativeCurrency
                             }{" "}
                             {formatNumber(
-                              toNumber(
-                                tradeAmount
-                              ),
+                              remainingMarketValueNative,
                               2
                             )}
                           </div>
 
                           <div className="text-xs text-slate-500">
-                            原币市值按本次实际卖出成交金额扣减。
+                            原币市值按 SELL 后剩余 Shares × 最近价格重新计算。
                           </div>
                         </div>
 
@@ -4352,16 +4792,9 @@ export default function InvestmentTransactionsPage() {
                         </label>
 
                         <input
-                          value={
-                            cashAssetCode
-                          }
-                          onChange={(
-                            e
-                          ) =>
-                            setCashAssetCode(
-                              e.target
-                                .value
-                            )
+                          value={cashAssetCode}
+                          onChange={(e) =>
+                            setCashAssetCode(e.target.value)
                           }
                           className="w-full rounded-lg border bg-white px-3 py-2 text-sm"
                         />
@@ -4369,122 +4802,161 @@ export default function InvestmentTransactionsPage() {
 
                       <div>
                         <div className="mb-1 text-sm font-medium">
-                          本币卖出金额（交易记录）
+                          本币卖出成交金额（交易记录）
                         </div>
 
                         <div className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold">
-                          {
-                            nativeCurrency
-                          }{" "}
-                          {formatNumber(
-                            toNumber(
-                              tradeAmount
-                            ),
-                            2
-                          )}
+                          {nativeCurrency}{" "}
+                          {formatNumber(toNumber(tradeAmount), 2)}
                         </div>
                       </div>
                     </div>
 
-                    {/* CNY Holding */}
-
-                    <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
-                      <div className="text-xs text-emerald-700">
-                        Cash Holding 增加（写入 Holding）
-                      </div>
-
-                      <div className="mt-1 text-xl font-bold text-emerald-800">
-                        +¥
-                        {formatNumber(
-                          tradeValueCny,
-                          2
-                        )}
-                      </div>
-
-                      <div className="mt-1 text-xs text-slate-500">
-                        Cash Holding.amount +
-                        ¥
-                        {formatNumber(
-                          tradeValueCny,
-                          2
-                        )}
-
-                        <br />
-
-                        Cash Holding.cost +
-                        ¥
-                        {formatNumber(
-                          tradeValueCny,
-                          2
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Native Currency */}
-
-                    {currency !==
-                      "CNY" && (
+                    {/* 先写 Cash Holding_native_currency */}
+                    {currency !== "CNY" && (
                       <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
                         <div className="text-xs text-emerald-700">
-                          SELL → Cash Holding_native_currency 写入
+                          SELL → Cash Holding_native_currency
                         </div>
 
-                        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                        <div className="mt-3 grid gap-4 sm:grid-cols-2">
                           <div>
-                            <div className="text-xs text-slate-500">
+                            <label className="mb-1 block text-xs text-slate-500">
                               Holding_native_currency.native_amount
-                            </div>
+                            </label>
 
-                            <div className="mt-1 text-lg font-bold text-emerald-800">
-                              +
-                              {
-                                nativeCurrency
-                              }{" "}
-                              {formatNumber(
-                                toNumber(
-                                  tradeAmount
-                                ),
-                                2
-                              )}
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">
+                                {nativeCurrency}
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={
+                                  cashNativeAmount ||
+                                  String(defaultCashNativeValuePreview)
+                                }
+                                onChange={(e) =>
+                                  setCashNativeAmount(e.target.value)
+                                }
+                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
+                              />
                             </div>
                           </div>
 
                           <div>
-                            <div className="text-xs text-slate-500">
+                            <label className="mb-1 block text-xs text-slate-500">
                               Holding_native_currency.native_cost
-                            </div>
+                            </label>
 
-                            <div className="mt-1 text-lg font-bold text-emerald-800">
-                              +
-                              {
-                                nativeCurrency
-                              }{" "}
-                              {formatNumber(
-                                toNumber(
-                                  tradeAmount
-                                ),
-                                2
-                              )}
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">
+                                {nativeCurrency}
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={
+                                  cashNativeCost ||
+                                  String(defaultCashNativeValuePreview)
+                                }
+                                onChange={(e) =>
+                                  setCashNativeCost(e.target.value)
+                                }
+                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
+                              />
                             </div>
                           </div>
                         </div>
 
                         <div className="mt-2 text-xs text-slate-500">
-                          Cash Holding 的原币现金增加，因此 native_amount 与 native_cost
-                          同时增加本次卖出所得原币金额。
+                          这两个原币数字可以直接修改；保存时会写入 Cash Holding_native_currency。
                         </div>
                       </div>
                     )}
 
-                    {/* CNY Cash */}
+                    {/* Cash Holding 增加 */}
+                    <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
+                      <div className="text-xs text-emerald-700">
+                        Cash Holding 增加（写入 Holding）
+                      </div>
 
-                    {currency ===
-                      "CNY" && (
+                      <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                        <div>
+                          <label className="mb-1 block text-xs text-slate-500">
+                            Cash Holding.amount +（扣除手续费）
+                          </label>
+                          {currency === "CNY" ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">¥</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={
+                                  cashCnyAmount ||
+                                  String(defaultCashCnyValuePreview)
+                                }
+                                onChange={(e) =>
+                                  setCashCnyAmount(e.target.value)
+                                }
+                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
+                              />
+                            </div>
+                          ) : (
+                            <div className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xl font-bold text-emerald-800">
+                              +¥{formatNumber(finalCashCnyAmountPreview, 2)}
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-xs text-slate-500">
+                            Cash Holding.cost +（扣除手续费）
+                          </label>
+                          {currency === "CNY" ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">¥</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={
+                                  cashCnyCost ||
+                                  String(defaultCashCnyValuePreview)
+                                }
+                                onChange={(e) =>
+                                  setCashCnyCost(e.target.value)
+                                }
+                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
+                              />
+                            </div>
+                          ) : (
+                            <div className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xl font-bold text-emerald-800">
+                              +¥{formatNumber(finalCashCnyCostPreview, 2)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {currency === "CNY" ? (
+                        <div className="mt-2 text-xs text-slate-500">
+                          CNY SELL 时，Cash Holding.amount / cost 可以直接修改；默认值为卖出成交金额扣除手续费。
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-slate-500">
+                          非 CNY SELL 时，这两个 CNY 数字不可直接修改，分别由上面的 Cash Holding_native_currency.native_amount / native_cost × 汇率换算得到。
+                        </div>
+                      )}
+                    </div>
+
+                    {currency === "CNY" && (
                       <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
                         <div className="text-xs text-emerald-700">
                           本次为 CNY Cash Holding
                         </div>
-
                         <div className="mt-1 text-sm font-semibold text-emerald-800">
                           不写入 Holding_native_currency
                         </div>
@@ -4603,7 +5075,7 @@ export default function InvestmentTransactionsPage() {
                   </li>
 
                   <li>
-                    卖出所得进入 Cash Holding
+                    卖出成交金额扣除手续费后进入 Cash Holding
                   </li>
 
                   <li>
@@ -4804,7 +5276,7 @@ export default function InvestmentTransactionsPage() {
                     </th>
 
                     <th className="px-3 py-3 text-right">
-                      本币金额
+                      本币成交金额
                     </th>
 
                     <th className="px-3 py-3 text-right">
