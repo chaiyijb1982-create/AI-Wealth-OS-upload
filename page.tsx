@@ -2701,11 +2701,11 @@ const mainlandPlatformStats = useMemo(() => {
     <table className="w-full text-sm">
       <thead>
         <tr className="border-b text-left text-gray-500">
-          <th className="py-2">平台</th>
-          <th className="py-2 text-right">当前金额</th>
-          <th className="py-2 text-right">成本</th>
-          <th className="py-2 text-right">盈亏</th>
-          <th className="py-2 text-right">收益率</th>
+          <th className="w-1/5 py-2">平台</th>
+          <th className="w-1/5 py-2 text-right">当前金额</th>
+          <th className="w-1/5 py-2 text-right">成本</th>
+          <th className="w-1/5 py-2 text-right">盈亏</th>
+          <th className="w-1/5 py-2 text-right">收益率</th>
         </tr>
       </thead>
 
