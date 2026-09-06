@@ -3012,7 +3012,7 @@ const mainlandPlatformStats = useMemo(() => {
 
     </div>
 
-  </div>
+
 
 </div>
 
