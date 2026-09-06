@@ -314,6 +314,10 @@ export default function AssetManagementPage() {
     setNativeFxRate,
   ] = useState<number | null>(null);
 
+  const [
+  usdToHkdRate,
+  setUsdToHkdRate,
+] = useState<number | null>(null);
   // ===================================================
   // FX 加载状态
   // ===================================================
@@ -597,6 +601,64 @@ export default function AssetManagementPage() {
     form.market,
     form.native_currency,
   ]);
+
+  // ===================================================
+// 香港统计：USD → HKD
+//
+// 通过：
+// USD/CNY ÷ HKD/CNY = USD/HKD
+// ===================================================
+
+useEffect(() => {
+  let cancelled = false;
+
+  async function loadUsdToHkdRate() {
+    try {
+      const [
+        usdToCny,
+        hkdToCny,
+      ] = await Promise.all([
+        getNativeToCnyRate("USD"),
+        getNativeToCnyRate("HKD"),
+      ]);
+
+      if (
+        cancelled
+      ) {
+        return;
+      }
+
+      if (
+        usdToCny == null ||
+        hkdToCny == null ||
+        usdToCny <= 0 ||
+        hkdToCny <= 0
+      ) {
+        setUsdToHkdRate(null);
+        return;
+      }
+
+      setUsdToHkdRate(
+        usdToCny / hkdToCny
+      );
+    } catch (error) {
+      console.error(
+        "load USD/HKD rate error:",
+        error
+      );
+
+      if (!cancelled) {
+        setUsdToHkdRate(null);
+      }
+    }
+  }
+
+  loadUsdToHkdRate();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
   // ===================================================
   // 编辑非 CN：
@@ -2595,8 +2657,58 @@ const hongKongStats = useMemo(() => {
 
         </div>
 
-      )}
+ {/* USD → HKD */}
+        {usdToHkdRate != null && (
+          <div
+            className="
+              flex
+              items-center
+              justify-between
+              rounded-lg
+              bg-gray-50
+              px-3
+              py-2.5
+            "
+          >
+            <div className="font-medium text-gray-700">
+              HKD
+            </div>
 
+            <div className="text-right">
+
+              <div className="text-sm font-semibold text-gray-900">
+                HK$
+                {formatNativeMoney(
+                  (
+                    hongKongStats.native.find(
+                      native =>
+                        native.currency === "USD"
+                    )?.amount || 0
+                  ) * usdToHkdRate
+                )}
+              </div>
+
+              <div className="mt-0.5 text-[11px] text-gray-400">
+                成本：
+                HK$
+                {formatNativeMoney(
+                  (
+                    hongKongStats.native.find(
+                      native =>
+                        native.currency === "USD"
+                    )?.cost || 0
+                  ) * usdToHkdRate
+                )}
+              </div>
+
+            </div>
+          </div>
+        )}
+
+
+
+      )}
+    
     </div>
 
   </div>
