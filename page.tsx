@@ -9,7 +9,7 @@ import {
 import { supabase } from "@/lib/supabase";
 
 import {
-  getFxExchanges,
+  getNativeToCnyRate,
 } from "@/lib/fx-exchanges";
 
 // =====================================================
@@ -149,84 +149,7 @@ function formatNativeMoney(value: any) {
   );
 }
 
-// =====================================================
-// 获取 本币 → CNY 汇率
-// =====================================================
 
-async function getNativeToCnyRate(
-  nativeCurrency: string
-): Promise<number | null> {
-
-  const currency =
-    nativeCurrency
-      .trim()
-      .toUpperCase();
-
-  // ===================================================
-  // CNY
-  // ===================================================
-
-  if (currency === "CNY") {
-    return 1;
-  }
-
-  const exchanges =
-    await getFxExchanges();
-
-  // ===================================================
-  // Native → CNY
-  // ===================================================
-
-  const direct =
-    exchanges.find(
-      item =>
-        item.from_currency
-          .trim()
-          .toUpperCase() === currency &&
-        item.to_currency
-          .trim()
-          .toUpperCase() === "CNY" &&
-        Number(item.from_amount) > 0 &&
-        Number(item.to_amount) > 0
-    );
-
-  if (direct) {
-
-    return (
-      Number(direct.to_amount) /
-      Number(direct.from_amount)
-    );
-
-  }
-
-  // ===================================================
-  // CNY → Native
-  // ===================================================
-
-  const reverse =
-    exchanges.find(
-      item =>
-        item.from_currency
-          .trim()
-          .toUpperCase() === "CNY" &&
-        item.to_currency
-          .trim()
-          .toUpperCase() === currency &&
-        Number(item.from_amount) > 0 &&
-        Number(item.to_amount) > 0
-    );
-
-  if (reverse) {
-
-    return (
-      Number(reverse.from_amount) /
-      Number(reverse.to_amount)
-    );
-
-  }
-
-  return null;
-}
 
 // =====================================================
 // 工具
@@ -453,8 +376,7 @@ export default function AssetManagementPage() {
   // 所以新增不会触发 disabled
   // ===================================================
 
-  const isEditingNonMainland =
-    editingId !== null &&
+  const isEditingNonMainland =    
     form.market?.trim().toUpperCase() !== "CN";
 
   // ===================================================
@@ -606,8 +528,7 @@ export default function AssetManagementPage() {
 
     async function loadNativeFx() {
 
-      if (
-        editingId === null ||
+      if (       
         form.market?.trim().toUpperCase() === "CN"
       ) {
 
