@@ -1452,7 +1452,128 @@ const hongKongStats = useMemo(() => {
   hongKongHoldings,
 ]);
 
+// ===================================================
+// 大陆平台统计
+// CNY
+// ===================================================
+const mainlandPlatformStats = useMemo(() => {
+  const map = new Map<
+    string,
+    {
+      platform: string;
+      amount: number;
+      cost: number;
+    }
+  >();
 
+  mainlandHoldings.forEach((holding) => {
+    const platform =
+      holding.platform?.trim() || "未设置平台";
+
+    const current = map.get(platform) ?? {
+      platform,
+      amount: 0,
+      cost: 0,
+    };
+
+    current.amount += Number(
+      holding.amount ?? 0
+    );
+
+    current.cost += Number(
+      holding.cost ?? 0
+    );
+
+    map.set(platform, current);
+  });
+
+  return Array.from(map.values())
+    .map((item) => ({
+      ...item,
+      profit:
+        item.amount - item.cost,
+      profitRate:
+        item.cost > 0
+          ? (
+              (item.amount - item.cost) /
+              item.cost
+            ) * 100
+          : 0,
+    }))
+    .sort(
+      (a, b) =>
+        b.amount - a.amount
+    );
+}, [
+  mainlandHoldings,
+]);
+
+// ===================================================
+// 香港平台统计
+// 本币
+// USD / HKD 分开统计
+// ===================================================
+const hongKongPlatformStats = useMemo(() => {
+  const map = new Map<
+    string,
+    {
+      platform: string;
+      currency: string;
+      amount: number;
+      cost: number;
+    }
+  >();
+
+  hongKongHoldings.forEach((holding) => {
+    const platform =
+      holding.platform?.trim() || "未设置平台";
+
+    const currency =
+      holding.native_currency
+        ?.trim()
+        .toUpperCase() || "USD";
+
+    const key =
+      `${platform}__${currency}`;
+
+    const current = map.get(key) ?? {
+      platform,
+      currency,
+      amount: 0,
+      cost: 0,
+    };
+
+    current.amount += Number(
+      holding.native_amount ?? 0
+    );
+
+    current.cost += Number(
+      holding.native_cost ?? 0
+    );
+
+    map.set(key, current);
+  });
+
+  return Array.from(map.values())
+    .map((item) => ({
+      ...item,
+      profit:
+        item.amount - item.cost,
+      profitRate:
+        item.cost > 0
+          ? (
+              (item.amount - item.cost) /
+              item.cost
+            ) * 100
+          : 0,
+    }))
+    .sort(
+      (a, b) =>
+        b.amount - a.amount
+    );
+}, [
+  hongKongHoldings,
+]);
   // ===================================================
   // 新增
   // ===================================================
