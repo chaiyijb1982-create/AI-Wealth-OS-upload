@@ -103,6 +103,31 @@ function cleanBatchTaskTitle(value: string) {
     .trim();
 }
 
+function parseBatchTaskLine(value: string) {
+  const cleaned = cleanBatchTaskTitle(value);
+
+  if (!cleaned) {
+    return {
+      title: "",
+      condition: null as string | null,
+    };
+  }
+
+  const match = cleaned.match(/^(.*?)\s*[|｜]\s*(.*?)\s*$/);
+
+  if (!match) {
+    return {
+      title: cleaned,
+      condition: null as string | null,
+    };
+  }
+
+  return {
+    title: match[1]?.trim() ?? "",
+    condition: match[2]?.trim() || null,
+  };
+}
+
 function isLikelyAssetTask(title: string) {
   const text = title.toLowerCase();
   return [
@@ -295,6 +320,10 @@ function getDecision(task: RecordTask, h: Holding | null) {
 // Holding Card
 // =====================================================
 
+// =====================================================
+// Holding Card
+// =====================================================
+
 function HoldingInfo({
   task,
   holding,
@@ -310,56 +339,70 @@ function HoldingInfo({
   const decision = getDecision(task, holding);
 
   return (
-    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
-      <div className="font-medium text-gray-800">
-        Holding：{holdingName(holding) || "未命名资产"}
+    <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+      <div className="min-w-0 text-xs text-gray-700">
+        <span className="font-medium">
+          Holding：
+        </span>
+
+        <span>
+          {holdingName(holding) || "未命名资产"}
+        </span>
+
+        {holdingCode(holding) && (
+          <span className="text-gray-500">
+            {" · "}
+            {holdingCode(holding)}
+          </span>
+        )}
       </div>
 
-      {holdingCode(holding) && (
-        <div className="mt-1 text-xs text-gray-500">
-          {holdingCode(holding)}
-        </div>
-      )}
-
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-        <div>
-          <div className="text-gray-400">当前值</div>
-          <div className="mt-1 font-medium text-gray-800">
+      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        <span className="whitespace-nowrap">
+          <span className="text-gray-400">当前值 </span>
+          <span className="font-medium text-gray-700">
             {formatMoney(amount, currency)}
-          </div>
-        </div>
-        <div>
-          <div className="text-gray-400">COST</div>
-          <div className="mt-1 font-medium text-gray-800">
+          </span>
+        </span>
+
+        <span className="whitespace-nowrap">
+          <span className="text-gray-400">COST </span>
+          <span className="font-medium text-gray-700">
             {formatMoney(cost, currency)}
-          </div>
-        </div>
-        <div>
-          <div className="text-gray-400">盈亏</div>
-          <div
-            className={`mt-1 font-medium ${
+          </span>
+        </span>
+
+        <span className="whitespace-nowrap">
+          <span className="text-gray-400">盈亏 </span>
+          <span
+            className={`font-medium ${
               diff >= 0 ? "text-green-600" : "text-red-500"
             }`}
           >
             {diff >= 0 ? "+" : ""}
             {formatMoney(diff, currency)}
-          </div>
-        </div>
-        <div>
-          <div className="text-gray-400">收益率</div>
-          <div
-            className={`mt-1 font-medium ${
-              (rate ?? 0) >= 0 ? "text-green-600" : "text-red-500"
+          </span>
+        </span>
+
+        <span className="whitespace-nowrap">
+          <span className="text-gray-400">收益率 </span>
+          <span
+            className={`font-medium ${
+              (rate ?? 0) >= 0
+                ? "text-green-600"
+                : "text-red-500"
             }`}
           >
-            {rate === null ? "—" : `${rate >= 0 ? "+" : ""}${rate.toFixed(2)}%`}
-          </div>
-        </div>
+            {rate === null
+              ? "—"
+              : `${rate >= 0 ? "+" : ""}${rate.toFixed(2)}%`}
+          </span>
+        </span>
       </div>
 
       {decision && (
         <div
-          className={`mt-3 text-xs ${
+          className={`mt-1 text-xs ${
             decision.tone === "green"
               ? "text-green-600"
               : decision.tone === "yellow"
@@ -455,46 +498,55 @@ function SortableTaskRow({
             </div>
           )}
 
-          {/* 没有 Holding 时，必须允许用户自己选择 */}
-          <div className="mt-3">
-            <div className="mb-1 text-xs font-medium text-gray-500">
-              Holding
-              {selected ? (
-                <span className="ml-2 font-normal text-green-600">
-                  已自动/手动关联
-                </span>
-              ) : (
-                <span className="ml-2 font-normal text-amber-600">
-                  自动匹配不到时请选择
-                </span>
-              )}
-            </div>
+        {/* Holding */}
+<div className="mt-2">
+  <div className="mb-1 text-xs font-medium text-gray-500">
+    Holding
+  </div>
 
-            <select
-              value={task.holding_id === null ? "" : String(task.holding_id)}
-              onChange={(e) =>
-                onSelectHolding(
-                  task,
-                  e.target.value ? Number(e.target.value) : null
-                )
-              }
-              className="w-full max-w-xl rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-gray-500"
-            >
-              <option value="">请选择 Holding</option>
-              {holdings.map((h) => {
-                const id = Number(holdingField(h, "id"));
-                if (!Number.isFinite(id)) return null;
-                return (
-                  <option key={id} value={id}>
-                    {holdingName(h) || "未命名资产"}
-                    {holdingCode(h) ? ` · ${holdingCode(h)}` : ""}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
+  <select
+    value={
+      task.holding_id === null
+        ? ""
+        : String(task.holding_id)
+    }
+    onChange={(e) =>
+      onSelectHolding(
+        task,
+        e.target.value
+          ? Number(e.target.value)
+          : null
+      )
+    }
+    className="w-full max-w-xl rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-gray-500"
+  >
+    <option value="">请选择 Holding</option>
 
-          {selected && <HoldingInfo task={task} holding={selected} />}
+    {holdings.map((h) => {
+      const id = Number(holdingField(h, "id"));
+
+      if (!Number.isFinite(id)) {
+        return null;
+      }
+
+      return (
+        <option key={id} value={id}>
+          {holdingName(h) || "未命名资产"}
+          {holdingCode(h)
+            ? ` · ${holdingCode(h)}`
+            : ""}
+        </option>
+      );
+    })}
+  </select>
+</div>
+
+{selected && (
+  <HoldingInfo
+    task={task}
+    holding={selected}
+  />
+)}
 
           {task.completed && task.completed_at && (
             <div className="mt-2 text-xs text-gray-400">
@@ -783,25 +835,35 @@ export default function RecordDetailPage() {
     }
   }
 
-  function buildBatchDrafts() {
-    const lines = batchText
-      .split(/\r?\n/)
-      .map(cleanBatchTaskTitle)
-      .filter(Boolean);
+function buildBatchDrafts() {
+  const parsedLines = batchText
+    .split(/\r?\n/)
+    .map(parseBatchTaskLine)
+    .filter((item) => Boolean(item.title));
 
-    const unique = [...new Set(lines)];
+  const unique = Array.from(
+    new Map(
+      parsedLines.map((item) => [
+        `${item.title}|||${item.condition ?? ""}`,
+        item,
+      ])
+    ).values()
+  );
 
-    return unique.map((taskTitle, index) => {
-      const auto = findMatchingHolding(taskTitle, holdings);
-      return {
-        id: `batch-${Date.now()}-${index}`,
-        title: taskTitle,
-        assetRelated: isLikelyAssetTask(taskTitle),
-        condition: null,
-        holdingId: auto ? Number(holdingField(auto, "id")) : null,
-      };
-    });
-  }
+  return unique.map((item, index) => {
+    const auto = findMatchingHolding(item.title, holdings);
+
+    return {
+      id: `batch-${Date.now()}-${index}`,
+      title: item.title,
+      assetRelated: isLikelyAssetTask(item.title),
+      condition: item.condition,
+      holdingId: auto
+        ? Number(holdingField(auto, "id"))
+        : null,
+    };
+  });
+}
 
   function handlePreviewBatchTasks() {
     if (!batchText.trim()) return;
@@ -1210,7 +1272,11 @@ export default function RecordDetailPage() {
             <textarea
               value={batchText}
               onChange={(e) => setBatchText(e.target.value)}
-              placeholder={"一行一个任务，例如：\n卖出易方达纳指\n卖出日本基金\n卖出摩根入息\n处理 TSM"}
+              placeholder={"一行一个任务；可用 | 同时填写条件，例如：\n" +
+              "卖出002849 | 回本后卖出\n" +
+              "002849盈利5%后卖出 | 收益率达到5%后卖出\n" +
+              "002849亏损5%检查 | 收益率低于-5%时检查\n" +
+              "检查002849持仓 | 持续观察"}
               rows={5}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-gray-500"
             />
@@ -1232,7 +1298,8 @@ export default function RecordDetailPage() {
               批量任务确认
             </h2>
             <div className="mt-1 text-xs text-gray-500">
-              系统会先自动匹配 Holding；无法可靠匹配的任务请选择 Holding。
+                支持「任务 | 条件」格式；系统会自动匹配 Holding，
+                无法可靠匹配的任务请选择 Holding。
             </div>
 
             <div className="mt-4 space-y-3">
