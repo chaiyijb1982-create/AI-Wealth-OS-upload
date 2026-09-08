@@ -103,6 +103,114 @@ function cleanBatchTaskTitle(value: string) {
     .trim();
 }
 
+
+function parseMonitoringCondition(
+  title: string,
+  condition: string | null = null
+) {
+  const text = `${title} ${condition ?? ""}`.replace(/\s+/g, "");
+
+  // -----------------------------------------------------
+  // 1. 盈利 X%
+  // 例如：
+  // 002849盈利5%后卖出
+  // 002849盈利10%后卖出
+  // -----------------------------------------------------
+  const profitMatch = text.match(
+    /盈利\s*(\d+(?:\.\d+)?)\s*%/
+  );
+
+  if (profitMatch) {
+    const target = Number(profitMatch[1]);
+
+    if (Number.isFinite(target)) {
+      return {
+        type: "rate",
+        operator: ">=",
+        target,
+        label: `收益率 ≥ ${target}%`,
+      } as const;
+    }
+  }
+
+  // -----------------------------------------------------
+  // 2. 亏损 X%
+  // 例如：
+  // 002849亏损5%检查
+  // 002849亏损10%检查
+  // -----------------------------------------------------
+  const lossMatch = text.match(
+    /亏损\s*(\d+(?:\.\d+)?)\s*%/
+  );
+
+  if (lossMatch) {
+    const target = Number(lossMatch[1]);
+
+    if (Number.isFinite(target)) {
+      return {
+        type: "rate",
+        operator: "<=",
+        target: -target,
+        label: `收益率 ≤ -${target}%`,
+      } as const;
+    }
+  }
+
+  // -----------------------------------------------------
+  // 3. 收益率达到 / 大于等于 / 不低于 X%
+  // -----------------------------------------------------
+  const rateGteMatch = text.match(
+    /收益率\s*(?:达到|大于等于|不低于|至少|超过|高于)\s*(-?\d+(?:\.\d+)?)\s*%/
+  );
+
+  if (rateGteMatch) {
+    const target = Number(rateGteMatch[1]);
+
+    if (Number.isFinite(target)) {
+      return {
+        type: "rate",
+        operator: ">=",
+        target,
+        label: `收益率 ≥ ${target}%`,
+      } as const;
+    }
+  }
+
+  // -----------------------------------------------------
+  // 4. 收益率低于 / 小于 / 不超过 X%
+  // -----------------------------------------------------
+  const rateLteMatch = text.match(
+    /收益率\s*(?:低于|小于|不超过|至多)\s*(-?\d+(?:\.\d+)?)\s*%/
+  );
+
+  if (rateLteMatch) {
+    const target = Number(rateLteMatch[1]);
+
+    if (Number.isFinite(target)) {
+      return {
+        type: "rate",
+        operator: "<=",
+        target,
+        label: `收益率 ≤ ${target}%`,
+      } as const;
+    }
+  }
+
+  // -----------------------------------------------------
+  // 5. 回本
+  // -----------------------------------------------------
+  if (/回本/.test(text)) {
+    return {
+      type: "rate",
+      operator: ">=",
+      target: 0,
+      label: "收益率 ≥ 0%（回本）",
+    } as const;
+  }
+
+  return null;
+}
+
 function parseBatchTaskLine(value: string) {
   const cleaned = cleanBatchTaskTitle(value);
 
@@ -286,31 +394,118 @@ function getDecision(task: RecordTask, h: Holding | null) {
 
   const amount = holdingAmount(h);
   const cost = holdingCost(h);
+
   if (!Number.isFinite(cost) || cost <= 0) {
-    return { text: "⚪ 暂无有效 COST，无法判断", tone: "gray" };
+    return {
+      text: "⚪ 暂无有效 COST，无法判断",
+      tone: "gray",
+      monitor: null,
+    };
   }
 
   const diff = amount - cost;
-  const explicitSell = /卖出|出售|减仓|减持|清仓|赎回/.test(task.title);
+  const rate = (diff / cost) * 100;
 
+  const explicitSell =
+    /卖出|出售|减仓|减持|清仓|赎回/.test(task.title);
+
+  // -----------------------------------------------------
+  // 优先解析明确的百分比 / 回本条件
+  //
+  // 例如：
+  // 002849盈利5%后卖出
+  // 002849亏损5%检查
+  // 收益率达到10%
+  // 收益率低于-5%
+  // 回本后卖出
+  // -----------------------------------------------------
+  const monitor = parseMonitoringCondition(
+    task.title,
+    task.condition
+  );
+
+  if (monitor?.type === "rate") {
+    const target = monitor.target;
+
+    const reached =
+      monitor.operator === ">="
+        ? rate >= target
+        : rate <= target;
+
+    if (reached) {
+      return {
+        text: `🟢 已达到条件：${monitor.label}，建议执行`,
+        tone: "green",
+        monitor: monitor.label,
+      };
+    }
+
+    return {
+      text: `🟡 尚未达到条件：${monitor.label}，继续监控`,
+      tone: "yellow",
+      monitor: monitor.label,
+    };
+  }
+
+  // -----------------------------------------------------
+  // 目标价格
+  // -----------------------------------------------------
   if (/目标价格|目标价/.test(task.condition ?? "")) {
-    return { text: "🟡 需要目标价格后判断", tone: "yellow" };
+    return {
+      text: "🟡 需要目标价格后判断",
+      tone: "yellow",
+      monitor: "目标价格",
+    };
   }
 
+  // -----------------------------------------------------
+  // 目标配置
+  // -----------------------------------------------------
   if (/目标配置|达到目标配置/.test(task.condition ?? "")) {
-    return { text: "🟡 需要目标配置数据后判断", tone: "yellow" };
+    return {
+      text: "🟡 需要目标配置数据后判断",
+      tone: "yellow",
+      monitor: "目标配置",
+    };
   }
 
-  if (/回本/.test(task.condition ?? "") || explicitSell) {
+  // -----------------------------------------------------
+  // 没有明确数字条件，但属于卖出类任务
+  // 保留你原来的逻辑：
+  // 默认按“回本”判断
+  // -----------------------------------------------------
+  if (explicitSell) {
     return diff >= 0
-      ? { text: "🟢 已达到回本条件，建议执行", tone: "green" }
-      : { text: "🟡 尚未达到回本条件，继续等待", tone: "yellow" };
+      ? {
+          text: "🟢 已达到回本条件，建议执行",
+          tone: "green",
+          monitor: "收益率 ≥ 0%（回本）",
+        }
+      : {
+          text: "🟡 尚未达到回本条件，继续等待",
+          tone: "yellow",
+          monitor: "收益率 ≥ 0%（回本）",
+        };
   }
 
-  if (/根据当时价格|价格决定/.test(task.condition ?? "") || /处理/.test(task.title)) {
+  // -----------------------------------------------------
+  // 原来的“根据当时价格 / 处理”
+  // -----------------------------------------------------
+  if (
+    /根据当时价格|价格决定/.test(task.condition ?? "") ||
+    /处理/.test(task.title)
+  ) {
     return diff >= 0
-      ? { text: "🟢 已回本，建议重新评估是否执行", tone: "green" }
-      : { text: "🟡 当前仍低于 COST，暂不建议卖出", tone: "yellow" };
+      ? {
+          text: "🟢 已回本，建议重新评估是否执行",
+          tone: "green",
+          monitor: "当前价格 / 回本状态",
+        }
+      : {
+          text: "🟡 当前仍低于 COST，暂不建议卖出",
+          tone: "yellow",
+          monitor: "当前价格 / 回本状态",
+        };
   }
 
   return null;
@@ -340,6 +535,7 @@ function HoldingInfo({
 
   return (
     <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+      {/* Holding */}
       <div className="min-w-0 text-xs text-gray-700">
         <span className="font-medium">
           Holding：
@@ -357,26 +553,35 @@ function HoldingInfo({
         )}
       </div>
 
+      {/* 财务数据 */}
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
         <span className="whitespace-nowrap">
-          <span className="text-gray-400">当前值 </span>
+          <span className="text-gray-400">
+            当前值{" "}
+          </span>
           <span className="font-medium text-gray-700">
             {formatMoney(amount, currency)}
           </span>
         </span>
 
         <span className="whitespace-nowrap">
-          <span className="text-gray-400">COST </span>
+          <span className="text-gray-400">
+            COST{" "}
+          </span>
           <span className="font-medium text-gray-700">
             {formatMoney(cost, currency)}
           </span>
         </span>
 
         <span className="whitespace-nowrap">
-          <span className="text-gray-400">盈亏 </span>
+          <span className="text-gray-400">
+            盈亏{" "}
+          </span>
           <span
             className={`font-medium ${
-              diff >= 0 ? "text-green-600" : "text-red-500"
+              diff >= 0
+                ? "text-green-600"
+                : "text-red-500"
             }`}
           >
             {diff >= 0 ? "+" : ""}
@@ -385,7 +590,9 @@ function HoldingInfo({
         </span>
 
         <span className="whitespace-nowrap">
-          <span className="text-gray-400">收益率 </span>
+          <span className="text-gray-400">
+            收益率{" "}
+          </span>
           <span
             className={`font-medium ${
               (rate ?? 0) >= 0
@@ -400,6 +607,14 @@ function HoldingInfo({
         </span>
       </div>
 
+      {/* 当前监控条件 */}
+      {decision?.monitor && (
+        <div className="mt-1 text-xs text-gray-400">
+          监控：{decision.monitor}
+        </div>
+      )}
+
+      {/* 判断结果 */}
       {decision && (
         <div
           className={`mt-1 text-xs ${
@@ -818,22 +1033,84 @@ export default function RecordDetailPage() {
     if (!response.ok) throw new Error(data?.error || "新增任务失败");
   }
 
-  async function handleAddTask() {
-    if (!newTask.trim()) return;
+async function handleAddTask() {
+  if (!newTask.trim()) return;
 
-    try {
-      setAddingTask(true);
-      const auto = findMatchingHolding(newTask, holdings);
-      await createTask(newTask, null, auto ? Number(holdingField(auto, "id")) : null);
-      setNewTask("");
-      await loadTasks();
-      await loadRecord();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "新增任务失败");
-    } finally {
-      setAddingTask(false);
-    }
+  try {
+    setAddingTask(true);
+
+    const parsed = parseBatchTaskLine(
+      newTask
+    );
+
+    if (!parsed.title) return;
+
+    const auto = findMatchingHolding(
+      parsed.title,
+      holdings
+    );
+
+    // 如果没有显式写 | 条件，
+    // 条件可以由任务标题中的“盈利5% / 亏损5% / 回本”
+    // 在 getDecision() 中自动解析。
+    await createTask(
+      parsed.title,
+      parsed.condition,
+      auto
+        ? Number(holdingField(auto, "id"))
+        : null
+    );
+
+    setNewTask("");
+
+    await loadTasks();
+    await loadRecord();
+  } catch (e) {
+    alert(
+      e instanceof Error
+        ? e.message
+        : "新增任务失败"
+    );
+  } finally {
+    setAddingTask(false);
   }
+}
+
+function parseBatchTaskLine(value: string) {
+  const cleaned = cleanBatchTaskTitle(value);
+
+  if (!cleaned) {
+    return {
+      title: "",
+      condition: null as string | null,
+    };
+  }
+
+  // 支持：
+  //
+  // 002849盈利5%后卖出 | 收益率达到5%后卖出
+  //
+  // 也支持全角：
+  //
+  // 002849盈利5%后卖出｜收益率达到5%后卖出
+
+  const match = cleaned.match(
+    /^(.*?)\s*[|｜]\s*(.*?)\s*$/
+  );
+
+  if (!match) {
+    return {
+      title: cleaned,
+      condition: null as string | null,
+    };
+  }
+
+  return {
+    title: match[1]?.trim() ?? "",
+    condition:
+      match[2]?.trim() || null,
+  };
+}
 
 function buildBatchDrafts() {
   const parsedLines = batchText
@@ -841,6 +1118,7 @@ function buildBatchDrafts() {
     .map(parseBatchTaskLine)
     .filter((item) => Boolean(item.title));
 
+  // title + condition 一起去重
   const unique = Array.from(
     new Map(
       parsedLines.map((item) => [
@@ -851,13 +1129,23 @@ function buildBatchDrafts() {
   );
 
   return unique.map((item, index) => {
-    const auto = findMatchingHolding(item.title, holdings);
+    // 自动匹配只使用任务标题
+    // 不把“收益率达到5%”之类的条件拿去匹配 Holding
+    const auto = findMatchingHolding(
+      item.title,
+      holdings
+    );
 
     return {
       id: `batch-${Date.now()}-${index}`,
+
       title: item.title,
-      assetRelated: isLikelyAssetTask(item.title),
+
+      assetRelated:
+        isLikelyAssetTask(item.title),
+
       condition: item.condition,
+
       holdingId: auto
         ? Number(holdingField(auto, "id"))
         : null,
