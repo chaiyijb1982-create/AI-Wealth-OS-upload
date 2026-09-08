@@ -1,5394 +1,2035 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
-import TopBar from "@/components/TopBar";
+  useRouter,
+  usePathname,
+} from "next/navigation";
 
 import {
-  getInvestmentTransactions,
-  type InvestmentTransaction,
-} from "@/lib/investment-transactions";
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
 
-import { supabase } from "@/lib/supabase";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+
+import { CSS } from "@dnd-kit/utilities";
+
+import {
+  EditorContent,
+  useEditor,
+} from "@tiptap/react";
+
+import StarterKit from "@tiptap/starter-kit";
+import Color from "@tiptap/extension-color";
+import { TextStyle } from "@tiptap/extension-text-style";
 
 // =====================================================
 // 类型
 // =====================================================
 
-type Region = "CN" | "HK";
-
-type TransactionScenario = "HOLDING" | "NEW";
-
-type TransactionType = "BUY" | "SELL";
-
-type SellMode = "SHARES" | "AMOUNT";
-
-type Currency = "CNY" | "USD" | "HKD";
-
-type InvestmentCategory =
-  | "fixed_income"
-  | "global_stock"
-  | "china_stock"
-  | "gold";
-
-type Holding = {
-  id: number;
-
-  code: string;
-  name: string;
-
-  market: string;
-  category: string | null;
-
-  amount: number;
-  cost: number;
-  fee_cost: number;
-
-  profit: number;
-  profit_rate: number;
-
-  currency: string | null;
-
-  nav: number | null;
-  shares: number | null;
-
-  platform: string | null;
-
-  active: boolean | null;
-  skip_update: boolean | null;
-
-  updated_at: string | null;
-
-  native_currency?: Currency | null;
-  native_amount?: number | null;
-  native_cost?: number | null;
-  native_fee_cost?: number | null;
+type RecordItem = {
+  id: string;
+  title: string;
+  content: Record<string, unknown>;
+  completed: boolean;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
-type HoldingNativeCurrency = {
-  id: number;
-  holding_id: number;
-  native_currency: Currency;
-  native_amount: number | null;
-  native_cost: number | null;
-  fee_cost: number | null;
-  updated_at: string | null;
+type RecordTask = {
+  id: string;
+  record_id: string;
+  title: string;
+
+  condition: string | null;
+  holding_id: number | null;
+
+  completed: boolean;
+  completed_at: string | null;
+  sort_order: number;
+  created_at: string;
 };
 
-type HoldingBalanceRow = {
-  id: number;
-  amount: number | null;
-  cost: number | null;
-  active: boolean | null;
-  shares: number | null;
+type RecordFile = {
+  id: string;
+  record_id: string;
+  file_name: string;
+  file_path: string;
+  file_type: string | null;
+  created_at: string;
+};
+
+type TaskProgress = {
+  completed: number;
+  total: number;
+};
+
+// =====================================================
+// 批量任务草稿
+// =====================================================
+
+type BatchTaskDraft = {
+  id: string;
+  title: string;
+
+  // 是否可能是资产相关任务
+  assetRelated: boolean;
+
+  // 后续步骤再填写
+  condition: string | null;
+  holdingId: number | null;
 };
 
 // =====================================================
 // 工具函数
 // =====================================================
 
-function toNumber(value: unknown): number {
-  const n = Number(value);
+function formatDateTime(value: string | null) {
+  if (!value) return "—";
 
-  if (!Number.isFinite(n)) {
-    return 0;
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "—";
   }
 
-  return n;
-}
-
-function formatNumber(value: any, digits = 2) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return "—";
-
-  return n.toLocaleString("zh-CN", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
   });
 }
 
-function getToday(): string {
-  return new Date().toISOString().slice(0, 10);
+/**
+ * 去除批量粘贴任务前面的常见编号。
+ *
+ * 支持：
+ *
+ * 1. 卖出日本基金
+ * 2、卖出摩根入息
+ * - 更新现金
+ * • 检查配置
+ * ☐ 卖出 VOO
+ * ✓ 检查资产
+ */
+function cleanBatchTaskTitle(value: string) {
+  return value
+    .trim()
+    .replace(
+      /^(?:\d+[\.\、\)]\s*|[-•·]\s*|[☐☑✓✔]\s*)/,
+      ""
+    )
+    .trim();
 }
 
-function formatDate(
-  value: string | null | undefined
-): string {
-  if (!value) {
-    return "";
-  }
+/**
+ * 判断任务是否可能属于资产操作。
+ *
+ * 注意：
+ *
+ * 这里只做“识别”，
+ * 不直接认为它一定需要 Holding。
+ *
+ * 后面用户确认以后，
+ * 才会关联 Holding。
+ */
+function isLikelyAssetTask(title: string) {
+  const text = title.toLowerCase();
 
-  return value.slice(0, 10);
-}
+  const assetKeywords = [
+    "卖出",
+    "买入",
+    "加仓",
+    "减仓",
+    "清仓",
+    "增持",
+    "减持",
+    "持有",
+    "调仓",
+    "调整仓位",
+    "归拢",
+    "换仓",
+    "基金",
+    "股票",
+    "etf",
+    "voo",
+    "schd",
+    "qqqm",
+    "gldm",
+    "黄金",
+    "纳指",
+    "标普",
+    "标普500",
+    "恒生",
+    "现金",
+    "资产",
+    "holding",
+  ];
 
-function getCategoryLabel(
-  category: string | null | undefined
-): string {
-  switch (category) {
-    case "fixed_income":
-      return "固定收益";
-
-    case "global_stock":
-      return "全球股票";
-
-    case "china_stock":
-      return "中国股票";
-
-    case "gold":
-      return "黄金";
-
-    default:
-      return category || "";
-  }
-}
-
-function getCashPrefix(
-  region: Region
-): string {
-  return region === "CN"
-    ? "CASH_CN_卖出暂存"
-    : "CASH_HK_卖出暂存";
-}
-
-function getCashDefaultCode(
-  region: Region,
-  platform: string
-): string {
-  return `${getCashPrefix(region)}_${
-    platform || "未指定平台"
-  }`;
-}
-
-function getCashName(
-  region: Region,
-  platform: string
-): string {
-  return region === "CN"
-    ? `人民币卖出暂存现金 - ${
-        platform || "未指定平台"
-      }`
-    : `港美股卖出暂存现金 - ${
-        platform || "未指定平台"
-      }`;
+  return assetKeywords.some((keyword) =>
+    text.includes(keyword.toLowerCase())
+  );
 }
 
 // =====================================================
-// 页面
+// Sortable Task
 // =====================================================
 
-export default function InvestmentTransactionsPage() {
+type SortableTaskRowProps = {
+  task: RecordTask;
+  onToggle: (task: RecordTask) => void;
+  onDelete: (task: RecordTask) => void;
+};
+
+function SortableTaskRow({
+  task,
+  onToggle,
+  onDelete,
+}: SortableTaskRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: task.id,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={[
+        "border-b border-gray-100 px-4 py-3 last:border-b-0",
+        isDragging
+          ? "relative z-10 bg-gray-50 shadow-sm"
+          : "bg-white",
+      ].join(" ")}
+    >
+      <div className="flex items-center gap-3">
+        {/* 拖动 */}
+        <button
+          type="button"
+          aria-label="拖动任务"
+          className="cursor-grab select-none text-gray-300 hover:text-gray-500 active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          ⋮⋮
+        </button>
+
+        {/* Checkbox */}
+        <input
+          type="checkbox"
+          checked={task.completed}
+          onChange={() => onToggle(task)}
+          className="h-4 w-4 cursor-pointer rounded border-gray-300"
+        />
+
+        {/* 任务 */}
+        <div className="min-w-0 flex-1">
+          <div
+            className={
+              task.completed
+                ? "text-sm text-gray-400"
+                : "text-sm text-gray-900"
+            }
+          >
+            {task.title}
+          </div>
+
+          {/* 条件 */}
+          {task.condition && (
+            <div className="mt-1 text-xs text-gray-500">
+              条件：{task.condition}
+            </div>
+          )}
+
+          {/* Holding */}
+          {task.holding_id !== null && (
+            <div className="mt-1 text-xs text-gray-400">
+              已关联资产
+            </div>
+          )}
+
+          {/* 完成时间 */}
+          {task.completed &&
+            task.completed_at && (
+              <div className="mt-1 text-xs text-gray-400">
+                完成于{" "}
+                {formatDateTime(
+                  task.completed_at
+                )}
+              </div>
+            )}
+        </div>
+
+        {/* 删除任务 */}
+        <button
+          type="button"
+          onClick={() => onDelete(task)}
+          className="shrink-0 rounded px-2 py-1 text-xs text-red-400 transition hover:bg-red-50 hover:text-red-600"
+        >
+          删除
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================
+// Page
+// =====================================================
+
+export default function RecordDetailPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+
   // ===================================================
-  // Loading / data
+  // 关键修复
+  //
+  // 当前页面：
+  //
+  // /record/63da615e-9111-465e-ae55-9424e22dcbfd
+  //
+  // 从 pathname 最后一段直接取得 recordId。
+  //
+  // 不再依赖 useParams()，
+  // 避免出现：
+  //
+  // /api/record/undefined
   // ===================================================
+
+  const recordId = useMemo(() => {
+    const parts = pathname
+      .split("/")
+      .filter(Boolean);
+
+    if (parts.length < 2) {
+      return "";
+    }
+
+    return parts[parts.length - 1] ?? "";
+  }, [pathname]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    })
+  );
+
+  const [record, setRecord] =
+    useState<RecordItem | null>(null);
+
+  const [tasks, setTasks] =
+    useState<RecordTask[]>([]);
+
+  const [progress, setProgress] =
+    useState<TaskProgress>({
+      completed: 0,
+      total: 0,
+    });
+
+  const [files, setFiles] =
+    useState<RecordFile[]>([]);
 
   const [loading, setLoading] =
     useState(true);
 
-  const [saving, setSaving] =
+  const [savingTitle, setSavingTitle] =
     useState(false);
 
-  const [holdings, setHoldings] =
-    useState<Holding[]>([]);
+  const [savingContent, setSavingContent] =
+    useState(false);
 
-  const [transactions, setTransactions] =
-    useState<InvestmentTransaction[]>([]);
-
-  const [message, setMessage] =
+  const [newTask, setNewTask] =
     useState("");
+
+  const [batchText, setBatchText] =
+    useState("");
+
+  const [batchDrafts, setBatchDrafts] =
+    useState<BatchTaskDraft[]>([]);
+
+  const [showBatchReview, setShowBatchReview] =
+    useState(false);
+
+  const [addingTask, setAddingTask] =
+    useState(false);
+
+  const [uploading, setUploading] =
+    useState(false);
 
   const [error, setError] =
     useState("");
 
-  // ===================================================
-  // Cash Holding 写入结果
-  // ===================================================
-
-  const [
-    cashHoldingResult,
-    setCashHoldingResult,
-  ] = useState<{
-    cnyAmount: number;
-    nativeCurrency: Currency;
-    nativeAmount: number;
-    holdingCreated: boolean;
-    nativeCreated: boolean;
-
-    securityCostBasisCny: number;
-    securityNativeAmount: number;
-    securityNativeCostBasis: number;
-    securityNativeCurrency: Currency | null;
-  } | null>(null);
-
-  // ===================================================
-  // 基础选择
-  // ===================================================
-
-  const [region, setRegion] =
-    useState<Region>("CN");
-
-  const [scenario, setScenario] =
-    useState<TransactionScenario>(
-      "HOLDING"
-    );
-
-  const [transactionType, setTransactionType] =
-    useState<TransactionType>("BUY");
-
-  const [selectedHoldingId, setSelectedHoldingId] =
-    useState<string>("");
-
-  // ===================================================
-  // 资产信息
-  // ===================================================
-
-  const [assetCode, setAssetCode] =
-    useState("");
-
-  const [assetName, setAssetName] =
-    useState("");
-
-  const [platform, setPlatform] =
-    useState("");
-
-  const [category, setCategory] =
-    useState<
-      InvestmentCategory | ""
-    >("");
-
-  // ===================================================
-  // 交易信息
-  // ===================================================
-
-  const [transactionDate, setTransactionDate] =
-    useState(getToday());
-
-  const [currency, setCurrency] =
-    useState<Currency>("CNY");
-
-  const [tradeAmount, setTradeAmount] =
-    useState("");
-
-  const [tradePrice, setTradePrice] =
-    useState("");
-
-  const [shares, setShares] =
-    useState("");
-
-  const [fee, setFee] =
+  const [title, setTitle] =
     useState("");
 
   // ===================================================
-  // 汇率
+  // Editor
   // ===================================================
 
-  const [fxRate, setFxRate] =
-    useState<number | null>(null);
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      TextStyle,
+      Color.configure({
+        types: ["textStyle"],
+      }),
+    ],
 
-  const [fxLoading, setFxLoading] =
-    useState(false);
-
-  // ===================================================
-  // SELL
-  // ===================================================
-
-  const [sellMode, setSellMode] =
-    useState<SellMode>("SHARES");
-
-  const [cashAssetCode, setCashAssetCode] =
-    useState("");
-
-  // SELL → Cash Holding_native_currency 可人工调整的原币金额/成本
-  // 空值时默认使用「卖出成交金额 - 手续费」。
-  const [cashNativeAmount, setCashNativeAmount] =
-    useState("");
-
-  const [cashNativeCost, setCashNativeCost] =
-    useState("");
-
-  // CNY SELL → Cash Holding.amount / cost 可人工调整。
-  // 非 CNY SELL 时由 Cash Holding_native_currency × FX 自动计算。
-  const [cashCnyAmount, setCashCnyAmount] =
-    useState("");
-
-  const [cashCnyCost, setCashCnyCost] =
-    useState("");
-
-  // ===================================================
-  // 备注
-  // ===================================================
-
-  const [remark, setRemark] =
-    useState("");
-
-  // ===================================================
-  // 加载数据
-  // ===================================================
-
-  const loadData = useCallback(
-    async () => {
-      try {
-        setLoading(true);
-        setError("");
-
-        const [
-          holdingsResult,
-          transactionsResult,
-        ] = await Promise.all([
-          supabase
-            .from("holdings")
-            .select(
-              [
-                "id",
-                "code",
-                "name",
-                "market",
-                "category",
-                "amount",
-                "cost",
-                "fee_cost",
-                "profit",
-                "profit_rate",
-                "currency",
-                "nav",
-                "shares",
-                "platform",
-                "active",
-                "skip_update",
-                "updated_at",
-              ].join(",")
-            )
-            .eq("active", true)
-            .order("name"),
-
-          getInvestmentTransactions(),
-        ]);
-
-        if (holdingsResult.error) {
-          throw holdingsResult.error;
-        }
-
-        const rawHoldings =
-          (holdingsResult.data ??
-            []) as unknown as Holding[];
-
-        const holdingIds =
-          rawHoldings.map(
-            (holding) => holding.id
-          );
-
-        let nativeRows: HoldingNativeCurrency[] =
-          [];
-
-        if (holdingIds.length > 0) {
-          const {
-            data,
-            error: nativeError,
-          } = await supabase
-            .from("holding_native_currency")
-            .select(
-              [
-                "id",
-                "holding_id",
-                "native_currency",
-                "native_amount",
-                "native_cost",
-                "fee_cost",
-                "updated_at",
-              ].join(",")
-            )
-            .in(
-              "holding_id",
-              holdingIds
-            );
-
-          if (nativeError) {
-            throw nativeError;
-          }
-
-          nativeRows =
-            (data ??
-              []) as unknown as HoldingNativeCurrency[];
-        }
-
-        const nativeMap =
-          new Map<
-            number,
-            HoldingNativeCurrency
-          >();
-
-        for (const row of nativeRows) {
-          nativeMap.set(
-            row.holding_id,
-            row
-          );
-        }
-
-        const enrichedHoldings =
-          rawHoldings.map(
-            (holding) => {
-              const native =
-                nativeMap.get(
-                  holding.id
-                );
-
-              return {
-                ...holding,
-                native_currency:
-                  native?.native_currency ??
-                  null,
-                native_amount:
-                  native?.native_amount ??
-                  null,
-                native_cost:
-                  native?.native_cost ??
-                  null,
-                fee_cost:
-                  holding.fee_cost ??
-                  0,
-                native_fee_cost:
-                  native?.fee_cost ??
-                  0,
-              };
-            }
-          );
-
-        setHoldings(
-          enrichedHoldings
-        );
-
-        setTransactions(
-          transactionsResult || []
-        );
-      } catch (err) {
-        console.log(err);
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "加载数据失败"
-        );
-      } finally {
-        setLoading(false);
-      }
+    content: {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+        },
+      ],
     },
-    []
-  );
 
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
-
-  // ===================================================
-  // Region Holdings
-  // ===================================================
-
-  const regionHoldings = useMemo(() => {
-    return holdings.filter(
-      (holding) => {
-        if (region === "CN") {
-          return (
-            holding.market === "CN"
-          );
-        }
-
-        return holding.market !== "CN";
-      }
-    );
-  }, [holdings, region]);
-
-  // ===================================================
-  // Selected Holding
-  // ===================================================
-
-  const selectedHolding = useMemo(() => {
-    if (!selectedHoldingId) {
-      return null;
-    }
-
-    return (
-      holdings.find(
-        (holding) =>
-          String(holding.id) ===
-          selectedHoldingId
-      ) || null
-    );
-  }, [
-    holdings,
-    selectedHoldingId,
-  ]);
-
-  // ===================================================
-  // Holding 当前 Shares
-  // ===================================================
-
-  const currentShares = useMemo(() => {
-    return toNumber(
-      selectedHolding?.shares
-    );
-  }, [selectedHolding]);
-
-  // ===================================================
-  // Holding 当前 Cost
-  // ===================================================
-
-  const currentCostCny = useMemo(() => {
-    return toNumber(
-      selectedHolding?.cost
-    );
-  }, [selectedHolding]);
-
-  // ===================================================
-  // Holding 当前平均成本
-  // ===================================================
-
-  const currentAvgCostCny =
-    useMemo(() => {
-      if (
-        currentShares <= 0 ||
-        currentCostCny <= 0
-      ) {
-        return 0;
-      }
-
-      return (
-        currentCostCny /
-        currentShares
-      );
-    }, [
-      currentShares,
-      currentCostCny,
-    ]);
-
-  // ===================================================
-  // Holding 选择
-  // ===================================================
-
-  const handleHoldingChange = (
-    value: string
-  ) => {
-    setSelectedHoldingId(value);
-
-    const holding =
-      holdings.find(
-        (item) =>
-          String(item.id) === value
-      ) || null;
-
-    if (!holding) {
-      return;
-    }
-
-    setAssetCode(
-      holding.code || ""
-    );
-
-    setAssetName(
-      holding.name || ""
-    );
-
-    setPlatform(
-      holding.platform || ""
-    );
-
-    if (region === "CN") {
-      setCurrency("CNY");
-    } else if (
-      holding.native_currency ===
-        "USD" ||
-      holding.native_currency ===
-        "HKD"
-    ) {
-      setCurrency(
-        holding.native_currency
-      );
-    } else {
-      setCurrency("USD");
-    }
-
-    if (
-      holding.category ===
-        "fixed_income" ||
-      holding.category ===
-        "global_stock" ||
-      holding.category ===
-        "china_stock" ||
-      holding.category === "gold"
-    ) {
-      setCategory(
-        holding.category
-      );
-    } else {
-      setCategory("");
-    }
-
-    setTradeAmount("");
-    setShares("");
-    setFee("");
-    setCashHoldingResult(null);
-
-    if (
-      transactionType === "SELL"
-    ) {
-      const currentNav =
-        toNumber(holding.nav);
-
-      setTradePrice(
-        currentNav > 0
-          ? String(currentNav)
-          : ""
-      );
-    } else {
-      setTradePrice("");
-    }
-
-    setFxRate(null);
-  };
-
-  // ===================================================
-  // Region 切换
-  // ===================================================
-
-  const handleRegionChange = (
-    value: Region
-  ) => {
-    setRegion(value);
-
-    setSelectedHoldingId("");
-
-    setAssetCode("");
-    setAssetName("");
-    setPlatform("");
-    setCategory("");
-
-    setTradeAmount("");
-    setTradePrice("");
-    setShares("");
-    setFee("");
-
-    setCashNativeAmount("");
-    setCashNativeCost("");
-    setCashCnyAmount("");
-    setCashCnyCost("");
-
-    setFxRate(null);
-
-    setCashHoldingResult(null);
-
-    if (value === "CN") {
-      setCurrency("CNY");
-    } else {
-      setCurrency("USD");
-    }
-
-    setCashAssetCode("");
-  };
-
-  // ===================================================
-  // Scenario 切换
-  // ===================================================
-
-  const handleScenarioChange = (
-    value: TransactionScenario
-  ) => {
-    setScenario(value);
-
-    setSelectedHoldingId("");
-
-    setAssetCode("");
-    setAssetName("");
-    setPlatform("");
-    setCategory("");
-
-    setTradeAmount("");
-    setTradePrice("");
-    setShares("");
-    setFee("");
-
-    setCashNativeAmount("");
-    setCashNativeCost("");
-    setCashCnyAmount("");
-    setCashCnyCost("");
-
-    setFxRate(null);
-
-    setCashHoldingResult(null);
-
-    if (value === "NEW") {
-      setTransactionType("BUY");
-    }
-  };
-
-  // ===================================================
-  // BUY / SELL 切换
-  // ===================================================
-
-  const handleTransactionTypeChange = (
-    value: TransactionType
-  ) => {
-    setTransactionType(value);
-
-    setTradeAmount("");
-    setTradePrice("");
-    setShares("");
-    setFee("");
-
-    setCashNativeAmount("");
-    setCashNativeCost("");
-    setCashCnyAmount("");
-    setCashCnyCost("");
-
-    setCashHoldingResult(null);
-
-    if (value === "SELL") {
-      setSellMode("SHARES");
-
-      const currentNav =
-        toNumber(
-          selectedHolding?.nav
-        );
-
-      setTradePrice(
-        currentNav > 0
-          ? String(currentNav)
-          : ""
-      );
-
-      setCashAssetCode(
-        getCashDefaultCode(
-          region,
-          platform
-        )
-      );
-    } else {
-      setCashAssetCode("");
-    }
-  };
-
-  // ===================================================
-  // Currency
-  // ===================================================
-
-  const handleCurrencyChange = (
-    value: Currency
-  ) => {
-    if (region === "CN") {
-      setCurrency("CNY");
-      return;
-    }
-
-    setCurrency(value);
-    setFxRate(null);
-  };
-
-  // ===================================================
-  // FX
-  // ===================================================
-
-  const fetchFxRate = useCallback(
-    async (
-      requestedCurrency: Currency = currency,
-      requestedDate: string =
-        transactionDate
-    ) => {
-      if (
-        region === "CN" ||
-        requestedCurrency === "CNY"
-      ) {
-        setFxRate(1);
-        return;
-      }
-
-      try {
-        setFxLoading(true);
-        setError("");
-
-        const response =
-          await fetch(
-            `/api/exchange-rate?date=${encodeURIComponent(
-              requestedDate
-            )}&currency=${encodeURIComponent(
-              requestedCurrency
-            )}`,
-            {
-              cache: "no-store",
-            }
-          );
-
-        const data =
-          await response.json();
-
-        const rate = Number(
-          data?.rate
-        );
-
-        if (
-          !response.ok ||
-          !data?.success ||
-          !Number.isFinite(rate) ||
-          rate <= 0
-        ) {
-          throw new Error(
-            `${requestedCurrency} 汇率获取失败`
-          );
-        }
-
-        if (
-          (requestedCurrency ===
-            "USD" ||
-            requestedCurrency ===
-              "HKD") &&
-          rate === 1
-        ) {
-          throw new Error(
-            `${requestedCurrency} 汇率异常：API 返回 1，请检查汇率接口`
-          );
-        }
-
-        setFxRate(rate);
-      } catch (err) {
-        console.log(
-          "FX 获取失败",
-          err
-        );
-
-        setFxRate(null);
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "获取汇率失败"
-        );
-      } finally {
-        setFxLoading(false);
-      }
+    editorProps: {
+      attributes: {
+        class:
+          "min-h-[320px] px-5 py-5 outline-none",
+      },
     },
-    [
-      currency,
-      transactionDate,
-      region,
-    ]
-  );
+
+    immediatelyRender: false,
+  });
 
   // ===================================================
-  // FX 自动获取
+  // Load Record
   // ===================================================
 
-  useEffect(() => {
-    let cancelled = false;
+  async function loadRecord() {
+    if (!recordId) return;
 
-    if (
-      region !== "HK" ||
-      currency === "CNY"
-    ) {
-      setFxLoading(false);
-      setFxRate(1);
-
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    if (
-      currency !== "USD" &&
-      currency !== "HKD"
-    ) {
-      setFxLoading(false);
-      setFxRate(null);
-
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    setFxRate(null);
-    setFxLoading(true);
-
-    void (async () => {
-      try {
-        setError("");
-
-        const response =
-          await fetch(
-            `/api/exchange-rate?date=${encodeURIComponent(
-              transactionDate
-            )}&currency=${encodeURIComponent(
-              currency
-            )}`,
-            {
-              cache: "no-store",
-            }
-          );
-
-        const data =
-          await response.json();
-
-        const rate = Number(
-          data?.rate
-        );
-
-        if (
-          !response.ok ||
-          !data?.success ||
-          !Number.isFinite(rate) ||
-          rate <= 0
-        ) {
-          throw new Error(
-            `${currency} 汇率获取失败`
-          );
-        }
-
-        if (rate === 1) {
-          throw new Error(
-            `${currency} 汇率异常：API 返回 1，请检查汇率接口`
-          );
-        }
-
-        if (!cancelled) {
-          setFxRate(rate);
-        }
-      } catch (err) {
-        if (cancelled) {
-          return;
-        }
-
-        console.log(
-          "FX 获取失败",
-          err
-        );
-
-        setFxRate(null);
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "获取汇率失败"
-        );
-      } finally {
-        if (!cancelled) {
-          setFxLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    region,
-    currency,
-    transactionDate,
-    selectedHoldingId,
-  ]);
-
-  // ===================================================
-  // BUY 自动计算交易金额
-  //
-  // 交易金额 = 买入单价 × Shares
-  // 手续费单独记录，不计入成交金额。
-  //
-  // 用户仍然可以手动修改交易金额。
-  // ===================================================
-
-  useEffect(() => {
-    if (
-      transactionType !== "BUY"
-    ) {
-      return;
-    }
-
-    const price =
-      toNumber(tradePrice);
-
-    const shareNumber =
-      toNumber(shares);
-
-    if (
-      price > 0 &&
-      shareNumber > 0
-    ) {
-      const calculatedAmount =
-        price * shareNumber;
-
-      setTradeAmount(
-        String(
-          Number(
-            calculatedAmount.toFixed(
-              8
-            )
-          )
-        )
-      );
-    }
-  }, [
-    tradePrice,
-    shares,
-    fee,
-    transactionType,
-  ]);
-
-  // ===================================================
-  // SELL 自动计算
-  // ===================================================
-
-  useEffect(() => {
-    if (
-      transactionType !== "SELL"
-    ) {
-      return;
-    }
-
-    const price =
-      toNumber(tradePrice);
-
-    if (price <= 0) {
-      return;
-    }
-
-    if (
-      sellMode === "SHARES"
-    ) {
-      const shareNumber =
-        toNumber(shares);
-
-      if (shareNumber > 0) {
-        const amount =
-          shareNumber * price;
-
-        setTradeAmount(
-          String(
-            Number(
-              amount.toFixed(8)
-            )
-          )
-        );
-      }
-    }
-
-    if (
-      sellMode === "AMOUNT"
-    ) {
-      const amount =
-        toNumber(tradeAmount);
-
-      if (amount > 0) {
-        const calculatedShares =
-          amount / price;
-
-        setShares(
-          String(
-            Number(
-              calculatedShares.toFixed(
-                8
-              )
-            )
-          )
-        );
-      }
-    }
-  }, [
-    transactionType,
-    sellMode,
-    shares,
-    tradePrice,
-    tradeAmount,
-  ]);
-
-  // ===================================================
-  // CNY 交易金额
-  // ===================================================
-
-  const tradeValueCny =
-    useMemo(() => {
-      const amount =
-        toNumber(tradeAmount);
-
-      if (amount <= 0) {
-        return 0;
-      }
-
-      if (currency === "CNY") {
-        return amount;
-      }
-
-      if (
-        !fxRate ||
-        fxRate <= 0
-      ) {
-        return 0;
-      }
-
-      return amount * fxRate;
-    }, [
-      tradeAmount,
-      currency,
-      fxRate,
-    ]);
-
-  // ===================================================
-  // SELL 扣减成本
-  // ===================================================
-
-  const sellCostBasisCny =
-    useMemo(() => {
-      if (
-        transactionType !== "SELL"
-      ) {
-        return 0;
-      }
-
-      const shareNumber =
-        toNumber(shares);
-
-      if (
-        shareNumber <= 0 ||
-        currentAvgCostCny <= 0
-      ) {
-        return 0;
-      }
-
-      return (
-        shareNumber *
-        currentAvgCostCny
-      );
-    }, [
-      transactionType,
-      shares,
-      currentAvgCostCny,
-    ]);
-
-  // ===================================================
-  // SELL 剩余 Shares
-  // ===================================================
-
-  const remainingShares =
-    useMemo(() => {
-      if (
-        transactionType !== "SELL"
-      ) {
-        return currentShares;
-      }
-
-      return Math.max(
-        0,
-        currentShares -
-          toNumber(shares)
-      );
-    }, [
-      transactionType,
-      currentShares,
-      shares,
-    ]);
-
-  // ===================================================
-  // SELL 剩余 Cost
-  // ===================================================
-
-  const remainingCostCny =
-    useMemo(() => {
-      if (
-        transactionType !== "SELL"
-      ) {
-        return currentCostCny;
-      }
-
-      return Math.max(
-        0,
-        currentCostCny -
-          sellCostBasisCny
-      );
-    }, [
-      transactionType,
-      currentCostCny,
-      sellCostBasisCny,
-    ]);
-
-  // ===================================================
-  // SELL 后剩余持仓市值预览
-  // ===================================================
-
-  const sellMarketPriceNative =
-    useMemo(() => {
-      if (transactionType !== "SELL") {
-        return 0;
-      }
-
-      return (
-        toNumber(selectedHolding?.nav) ||
-        toNumber(tradePrice)
-      );
-    }, [
-      transactionType,
-      selectedHolding,
-      tradePrice,
-    ]);
-
-  const remainingMarketValueNative =
-    useMemo(() => {
-      if (transactionType !== "SELL") {
-        return 0;
-      }
-
-      return Math.max(
-        0,
-        remainingShares *
-          sellMarketPriceNative
-      );
-    }, [
-      transactionType,
-      remainingShares,
-      sellMarketPriceNative,
-    ]);
-
-  const defaultCashNativeValuePreview =
-    Math.max(
-      0,
-      toNumber(tradeAmount) - toNumber(fee)
-    );
-
-  const finalCashNativeAmountPreview =
-    Math.max(
-      0,
-      toNumber(cashNativeAmount) > 0
-        ? toNumber(cashNativeAmount)
-        : defaultCashNativeValuePreview
-    );
-
-  const defaultCashCnyValuePreview = Math.max(
-    0,
-    tradeValueCny - toNumber(fee)
-  );
-
-  const finalCashCnyAmountPreview =
-    currency === "CNY"
-      ? Math.max(
-          0,
-          cashCnyAmount !== ""
-            ? toNumber(cashCnyAmount)
-            : defaultCashCnyValuePreview
-        )
-      : Math.max(
-          0,
-          finalCashNativeAmountPreview *
-            (fxRate || 0)
-        );
-
-  const finalCashCnyCostPreview =
-    currency === "CNY"
-      ? Math.max(
-          0,
-          cashCnyCost !== ""
-            ? toNumber(cashCnyCost)
-            : defaultCashCnyValuePreview
-        )
-      : Math.max(
-          0,
-          (cashNativeCost !== ""
-            ? toNumber(cashNativeCost)
-            : defaultCashNativeValuePreview) *
-            (fxRate || 0)
-        );
-
-  // ===================================================
-  // SELL 后剩余持仓市值预览
-  // ===================================================
-
-  const remainingMarketValueCny =
-    useMemo(() => {
-      if (transactionType !== "SELL") {
-        return 0;
-      }
-
-      if (currency === "CNY") {
-        return remainingMarketValueNative;
-      }
-
-      return Math.max(
-        0,
-        remainingMarketValueNative *
-          (fxRate || 0)
-      );
-    }, [
-      transactionType,
-      currency,
-      remainingMarketValueNative,
-      fxRate,
-    ]);
-
-  // ===================================================
-  // SELL 默认 Cash Holding
-  // ===================================================
-
-  useEffect(() => {
-    if (
-      transactionType !== "SELL"
-    ) {
-      return;
-    }
-
-    const defaultCode =
-      getCashDefaultCode(
-        region,
-        platform
-      );
-
-    const previousDefaultPrefix =
-      `${getCashPrefix(region)}_`;
-
-    if (
-      !cashAssetCode ||
-      cashAssetCode.startsWith(
-        previousDefaultPrefix
-      )
-    ) {
-      setCashAssetCode(
-        defaultCode
-      );
-    }
-  }, [
-    transactionType,
-    region,
-    platform,
-    cashAssetCode,
-  ]);
-
-  // ===================================================
-  // 是否真正写入 Security Holding
-  // ===================================================
-
-  const writesSecurityHolding =
-    scenario === "HOLDING" ||
-    (
-      scenario === "NEW" &&
-      transactionType === "BUY"
-    );
-
-  // ===================================================
-  // 是否写入 Cash Holding
-  // ===================================================
-
-  const writesCashHolding =
-    scenario === "HOLDING" &&
-    transactionType === "SELL";
-
-  // ===================================================
-  // 更新 Security Holding
-  // ===================================================
-
-  const updateSecurityHolding =
-    async ({
-      holding,
-      type,
-      shareCount,
-      tradeAmountNative,
-      grossTradeAmountNative,
-      grossTradeValueCny,
-      tradeValueCny,
-      sellCostBasisCny,
-      feeNative,
-      feeCny,
-      currency,
-    }: {
-      holding: Holding;
-      type: TransactionType;
-      shareCount: number;
-      tradeAmountNative: number;
-      grossTradeAmountNative: number;
-      grossTradeValueCny: number;
-      tradeValueCny: number;
-      sellCostBasisCny: number;
-      feeNative: number;
-      feeCny: number;
-      currency: Currency;
-    }) => {
-      const oldShares =
-        toNumber(holding.shares);
-
-      const oldCostCny =
-        toNumber(holding.cost);
-
-      const oldAmountCny =
-        toNumber(holding.amount);
-
-      if (oldShares < 0) {
-        throw new Error(
-          `Holding ${holding.code} 的 Shares 已经小于 0`
-        );
-      }
-
-      if (
-        type === "SELL" &&
-        shareCount >
-          oldShares +
-            0.00000001
-      ) {
-        throw new Error(
-          `Holding ${holding.code} 可卖 Shares 不足`
-        );
-      }
-
-      // -------------------------------------------------
-      // 非 CNY Holding
-      // -------------------------------------------------
-
-      let native:
-        | HoldingNativeCurrency
-        | null = null;
-
-      if (
-        currency !== "CNY"
-      ) {
-        if (
-          tradeAmountNative <=
-          0
-        ) {
-          throw new Error(
-            `${currency} 原币交易金额必须大于 0`
-          );
-        }
-
-        const {
-          data: nativeRaw,
-          error: nativeFindError,
-        } = await supabase
-          .from(
-            "holding_native_currency"
-          )
-          .select(
-            [
-              "id",
-              "holding_id",
-              "native_currency",
-              "native_amount",
-              "native_cost",
-              "fee_cost",
-              "updated_at",
-            ].join(",")
-          )
-          .eq(
-            "holding_id",
-            holding.id
-          )
-          .maybeSingle();
-
-        if (nativeFindError) {
-          throw nativeFindError;
-        }
-
-        native =
-          nativeRaw as unknown as HoldingNativeCurrency | null;
-
-        if (!native) {
-          throw new Error(
-            `Holding ${holding.code} 缺少 holding_native_currency 记录，不能进行 ${currency} ${type}`
-          );
-        }
-
-        if (
-          native.native_currency !==
-          currency
-        ) {
-          throw new Error(
-            `Holding ${holding.code} 的原币是 ${native.native_currency}，当前交易币种为 ${currency}`
-          );
-        }
-      }
-
-      let newShares =
-        oldShares;
-
-      let newCostCny =
-        oldCostCny;
-
-      let newAmountCny =
-        oldAmountCny;
-
-      let active =
-        holding.active !== false;
-
-      let sellMarketPriceNative = 0;
-
-      // -------------------------------------------------
-      // BUY
-      // -------------------------------------------------
-
-      if (type === "BUY") {
-        newShares =
-          oldShares +
-          shareCount;
-
-        newCostCny =
-          oldCostCny +
-          grossTradeValueCny;
-
-        newAmountCny =
-          oldAmountCny +
-          grossTradeValueCny;
-
-        active = true;
-      } else {
-        // -------------------------------------------------
-        // SELL
-        // -------------------------------------------------
-        //
-        // Shares / Cost / FeeCost 与市值 Amount 分开处理：
-        //
-        // 1. Shares：减去本次卖出 Shares
-        // 2. Cost：减去本次卖出 Shares 对应的历史成本
-        // 3. fee_cost：累计本次手续费，永不因为 Shares 清零而重置
-        // 4. Amount：SELL 后不再用「旧 Amount - 卖出成交金额」
-        //    而是用「SELL 后剩余 Shares × 最近价格」重新计算
-        //
-        // 最近价格优先读取数据库中当前 Holding.nav。
-        // Holding.nav 是 update-market/route 最近一次更新的市场价格。
-        // 如果数据库 nav 暂不可用，则退回页面当前 Holding.nav，
-        // 最后再退回本次 SELL 成交价，避免 Amount 被错误清零。
-        // -------------------------------------------------
-
-        newShares =
-          oldShares -
-          shareCount;
-
-        newCostCny =
-          oldCostCny -
-          sellCostBasisCny;
-
-        if (
-          Math.abs(newShares) <
-          0.00000001
-        ) {
-          newShares = 0;
-        }
-
-        const {
-          data: latestHoldingPriceRow,
-          error: latestHoldingPriceError,
-        } = await supabase
-          .from("holdings")
-          .select("nav")
-          .eq("id", holding.id)
-          .maybeSingle();
-
-        if (latestHoldingPriceError) {
-          throw latestHoldingPriceError;
-        }
-
-        sellMarketPriceNative =
-          toNumber(
-            latestHoldingPriceRow?.nav
-          ) ||
-          toNumber(holding.nav) ||
-          (shareCount > 0
-            ? grossTradeAmountNative /
-              shareCount
-            : 0);
-
-        if (
-          newShares > 0 &&
-          sellMarketPriceNative <= 0
-        ) {
-          throw new Error(
-            `Holding ${holding.code} SELL 后无法取得有效的最近价格，不能重新计算剩余市值`
-          );
-        }
-
-        // 非 CNY 时，grossTradeValueCny / grossTradeAmountNative
-        // 就是本次交易使用的 native → CNY 汇率。
-        const cnyPerNative =
-          currency === "CNY"
-            ? 1
-            : grossTradeAmountNative > 0
-              ? grossTradeValueCny /
-                grossTradeAmountNative
-              : 0;
-
-        const remainingMarketValueNativeAfterSell =
-          newShares > 0
-            ? newShares *
-              sellMarketPriceNative
-            : 0;
-
-        newAmountCny =
-          currency === "CNY"
-            ? remainingMarketValueNativeAfterSell
-            : remainingMarketValueNativeAfterSell *
-              cnyPerNative;
-
-        if (
-          Math.abs(newShares) <
-          0.00000001
-        ) {
-          newShares = 0;
-        }
-
-        if (
-          Math.abs(newCostCny) <
-          0.01
-        ) {
-          newCostCny = 0;
-        }
-
-        if (
-          Math.abs(newAmountCny) <
-          0.01
-        ) {
-          newAmountCny = 0;
-        }
-
-        if (newShares <= 0) {
-          newShares = 0;
-          newCostCny = 0;
-          newAmountCny = 0;
-          active = false;
-        }
-      }
-
-      if (
-        newShares <
-        -0.00000001
-      ) {
-        throw new Error(
-          "Holding Shares 不能小于 0"
-        );
-      }
-
-      if (
-        newCostCny <
-        -0.01
-      ) {
-        throw new Error(
-          "Holding Cost 不能小于 0"
-        );
-      }
-
-      if (
-        newAmountCny <
-        -0.01
-      ) {
-        throw new Error(
-          "Holding Amount 不能小于 0"
-        );
-      }
-
-      const roundedCost =
-        Math.max(
-          0,
-          Math.round(newCostCny)
-        );
-
-      const roundedAmount =
-        Math.max(
-          0,
-          Math.round(newAmountCny)
-        );
-
-      const oldFeeCny =
-        toNumber(holding.fee_cost);
-
-      const newFeeCny =
-        oldFeeCny + feeCny;
-
-      const profit =
-        roundedAmount -
-        roundedCost;
-
-      const profitRate =
-        roundedCost > 0
-          ? (profit /
-              roundedCost) *
-            100
-          : 0;
-
-      const holdingPayload = {
-        shares:
-          Math.max(
-            0,
-            newShares
-          ),
-
-        cost: roundedCost,
-
-        fee_cost: newFeeCny,
-
-        amount:
-          roundedAmount,
-
-        profit:
-          Math.round(profit),
-
-        profit_rate:
-          profitRate,
-
-        currency: "CNY",
-
-        active,
-
-        updated_at:
-          new Date().toISOString(),
-      };
-
-      const {
-        error: holdingError,
-      } = await supabase
-        .from("holdings")
-        .update(
-          holdingPayload
-        )
-        .eq(
-          "id",
-          holding.id
-        );
-
-      if (holdingError) {
-        throw holdingError;
-      }
-
-      // CNY Holding 不写 native table
-      if (
-        currency === "CNY"
-      ) {
-        return;
-      }
-
-      if (!native) {
-        throw new Error(
-          "内部错误：native row 未加载"
-        );
-      }
-
-      const oldNativeAmount =
-        toNumber(
-          native.native_amount
-        );
-
-      const oldNativeCost =
-        toNumber(
-          native.native_cost
-        );
-
-      let newNativeAmount =
-        oldNativeAmount;
-
-      let newNativeCost =
-        oldNativeCost;
-
-      const oldNativeFeeCost =
-        toNumber(native.fee_cost);
-
-      const newNativeFeeCost =
-        oldNativeFeeCost + feeNative;
-
-      if (
-        type === "BUY"
-      ) {
-        newNativeAmount =
-          oldNativeAmount +
-          grossTradeAmountNative;
-
-        newNativeCost =
-          oldNativeCost +
-          grossTradeAmountNative;
-      } else {
-        // -------------------------------------------------
-        // SELL native_amount
-        // -------------------------------------------------
-        //
-        // SELL 后 native_amount 表示「剩余持仓的当前/最近市值」，
-        // 因此不能继续用 oldNativeAmount - 本次卖出成交金额。
-        //
-        // 与 holdings.amount 使用完全相同的最近价格逻辑：
-        // remaining Shares × Holding.nav。
-        // -------------------------------------------------
-
-        newNativeAmount =
-          newShares > 0
-            ? newShares *
-              sellMarketPriceNative
-            : 0;
-
-        // -------------------------------------------------
-        // SELL native_cost
-        //
-        // 按卖出 Shares / 原持仓 Shares
-        // 比例扣减历史原币成本。
-        // 这里绝对不能使用市场价格重新计算 cost。
-        // -------------------------------------------------
-
-        const nativeCostBasis =
-          oldShares > 0
-            ? oldNativeCost *
-              (shareCount /
-                oldShares)
-            : oldNativeCost;
-
-        newNativeCost =
-          oldNativeCost -
-          nativeCostBasis;
-
-        if (
-          Math.abs(
-            newNativeAmount
-          ) <
-          0.00000001
-        ) {
-          newNativeAmount = 0;
-        }
-
-        if (
-          Math.abs(
-            newNativeCost
-          ) <
-          0.00000001
-        ) {
-          newNativeCost = 0;
-        }
-
-        if (
-          newNativeAmount <
-          -0.00000001
-        ) {
-          throw new Error(
-            `${currency} native_amount 不足，不能完成 SELL`
-          );
-        }
-
-        if (
-          newNativeCost <
-          -0.00000001
-        ) {
-          throw new Error(
-            `${currency} native_cost 不足，不能完成 SELL`
-          );
-        }
-      }
-
-      const {
-        error:
-          nativeUpdateError,
-      } = await supabase
-        .from(
-          "holding_native_currency"
-        )
-        .update({
-          native_amount:
-            Math.max(
-              0,
-              newNativeAmount
-            ),
-
-          native_cost:
-            Math.max(
-              0,
-              newNativeCost
-            ),
-
-          fee_cost:
-            newNativeFeeCost,
-
-          updated_at:
-            new Date().toISOString(),
-        })
-        .eq(
-          "id",
-          native.id
-        );
-
-      if (
-        nativeUpdateError
-      ) {
-        // -------------------------------------------------
-        // 回滚 holdings
-        // -------------------------------------------------
-
-        await supabase
-          .from("holdings")
-          .update({
-            shares:
-              oldShares,
-
-            cost:
-              Math.max(
-                0,
-                Math.round(
-                  oldCostCny
-                )
-              ),
-
-            fee_cost:
-              oldFeeCny,
-
-            amount:
-              Math.max(
-                0,
-                Math.round(
-                  oldAmountCny
-                )
-              ),
-
-            profit:
-              Math.round(
-                oldAmountCny
-              ) -
-              Math.round(
-                oldCostCny
-              ),
-
-            profit_rate:
-              oldCostCny > 0
-                ? ((oldAmountCny -
-                    oldCostCny) /
-                    oldCostCny) *
-                  100
-                : 0,
-
-            currency: "CNY",
-
-            active:
-              holding.active !==
-              false,
-
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq(
-            "id",
-            holding.id
-          );
-
-        throw nativeUpdateError;
-      }
-    };
-
-  // ===================================================
-  // 回滚 Security Holding
-  // ===================================================
-
-  const restoreSecurityHolding =
-    async (
-      holding: Holding
-    ) => {
-      const {
-        error,
-      } = await supabase
-        .from("holdings")
-        .update({
-          shares:
-            holding.shares,
-
-          amount:
-            Math.max(
-              0,
-              Math.round(
-                toNumber(
-                  holding.amount
-                )
-              )
-            ),
-
-          cost:
-            Math.max(
-              0,
-              Math.round(
-                toNumber(
-                  holding.cost
-                )
-              )
-            ),
-
-          fee_cost:
-            toNumber(
-              holding.fee_cost
-            ),
-
-          profit:
-            Math.round(
-              toNumber(
-                holding.profit
-              )
-            ),
-
-          profit_rate:
-            toNumber(
-              holding.profit_rate
-            ),
-
-          currency: "CNY",
-
-          active:
-            holding.active !==
-            false,
-
-          updated_at:
-            new Date().toISOString(),
-        })
-        .eq(
-          "id",
-          holding.id
-        );
-
-      if (error) {
-        console.log(
-          "Security Holding 回滚失败",
-          error
-        );
-      }
-
-      // -------------------------------------------------
-      // 非 CNY SELL：
-      // 同时恢复 native
-      // -------------------------------------------------
-
-      if (
-        holding.native_currency !==
-          "CNY" &&
-        holding.native_currency
-      ) {
-        const {
-          error:
-            nativeError,
-        } = await supabase
-          .from(
-            "holding_native_currency"
-          )
-          .update({
-            native_amount:
-              toNumber(
-                holding.native_amount
-              ),
-
-            native_cost:
-              toNumber(
-                holding.native_cost
-              ),
-
-            fee_cost:
-              toNumber(
-                holding.native_fee_cost
-              ),
-
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq(
-            "holding_id",
-            holding.id
-          );
-
-        if (nativeError) {
-          console.log(
-            "Security Holding_native_currency 回滚失败",
-            nativeError
-          );
-        }
-      }
-    };
-
-  // ===================================================
-  // 创建 NEW Security Holding
-  // ===================================================
-
-  const createNewSecurityHolding =
-    async ({
-      code,
-      name,
-      market,
-      category,
-      amountCny,
-      costCny,
-      shares,
-      currency,
-      nav,
-      platform,
-      nativeAmount,
-      feeNative,
-      feeCny,
-    }: {
-      code: string;
-      name: string;
-      market: string;
-      category: string;
-      amountCny: number;
-      costCny: number;
-      shares: number;
-      currency: Currency;
-      nav: number;
-      platform: string;
-      nativeAmount: number;
-      feeNative: number;
-      feeCny: number;
-    }) => {
-      if (!code.trim()) {
-        throw new Error(
-          "NEW BUY 缺少资产代码"
-        );
-      }
-
-      if (!name.trim()) {
-        throw new Error(
-          "NEW BUY 缺少资产名称"
-        );
-      }
-
-      if (!category) {
-        throw new Error(
-          "NEW BUY 缺少资产类别"
-        );
-      }
-
-      if (amountCny <= 0) {
-        throw new Error(
-          "NEW BUY CNY 金额必须大于 0"
-        );
-      }
-
-      if (costCny <= 0) {
-        throw new Error(
-          "NEW BUY CNY 成本必须大于 0"
-        );
-      }
-
-      if (shares <= 0) {
-        throw new Error(
-          "NEW BUY Shares 必须大于 0"
-        );
-      }
-
-      const {
-        data: existingRaw,
-        error: existingError,
-      } = await supabase
-        .from("holdings")
-        .select(
-          "id, code, name, platform, active"
-        )
-        .eq(
-          "code",
-          code.trim()
-        )
-        .eq(
-          "platform",
-          platform.trim()
-        )
-        .eq(
-          "active",
-          true
-        )
-        .maybeSingle();
-
-      if (existingError) {
-        throw existingError;
-      }
-
-      if (existingRaw) {
-        throw new Error(
-          `Holding 已存在：${code.trim()}（${platform.trim()}），请使用「已有 Holding」进行 BUY`
-        );
-      }
-
-      const {
-        data: insertedRaw,
-        error: insertError,
-      } = await supabase
-        .from("holdings")
-        .insert({
-          code:
-            code.trim(),
-
-          name:
-            name.trim(),
-
-          market,
-
-          category,
-
-          amount:
-            Math.round(
-              amountCny
-            ),
-
-          cost:
-            Math.round(
-              costCny
-            ),
-
-          fee_cost:
-            feeCny,
-
-          profit: 0,
-
-          profit_rate: 0,
-
-          currency: "CNY",
-
-          nav,
-
-          shares,
-
-          platform:
-            platform.trim(),
-
-          active: true,
-
-          skip_update: false,
-
-          updated_at:
-            new Date().toISOString(),
-        })
-        .select("id")
-        .single();
-
-      if (insertError) {
-        throw insertError;
-      }
-
-      if (
-        currency === "CNY"
-      ) {
-        return;
-      }
-
-      const holdingId =
-        Number(
-          (
-            insertedRaw as unknown as {
-              id: number;
-            }
-          ).id
-        );
-
-      if (!holdingId) {
-        throw new Error(
-          "NEW BUY 创建 Holding 后没有取得 holding_id"
-        );
-      }
-
-      const {
-        error:
-          nativeInsertError,
-      } = await supabase
-        .from(
-          "holding_native_currency"
-        )
-        .insert({
-          holding_id:
-            holdingId,
-
-          native_currency:
-            currency,
-
-          native_amount:
-            nativeAmount,
-
-          native_cost:
-            nativeAmount,
-
-          fee_cost:
-            feeNative,
-
-          updated_at:
-            new Date().toISOString(),
-        });
-
-      if (
-        nativeInsertError
-      ) {
-        await supabase
-          .from("holdings")
-          .delete()
-          .eq(
-            "id",
-            holdingId
-          );
-
-        throw nativeInsertError;
-      }
-    };
-
-  // ===================================================
-  // Cash Holding + holding_native_currency
-  // ===================================================
-
-  const updateCashHolding =
-    async ({
-      code,
-      currency,
-      market,
-      platform,
-      cnyAmount,
-      cnyCost,
-      nativeAmount,
-      nativeCost,
-      fxRate,
-    }: {
-      code: string;
-      currency: Currency;
-      market: string;
-      platform: string;
-      cnyAmount: number;
-      cnyCost: number;
-      nativeAmount: number;
-      nativeCost: number;
-      fxRate: number;
-    }) => {
-      if (
-        !code ||
-        cnyAmount <= 0
-      ) {
-        throw new Error(
-          "Cash Holding 参数无效"
-        );
-      }
-
-      // =================================================
-      // CNY Cash
-      // =================================================
-
-      if (
-        currency === "CNY"
-      ) {
-        const {
-          data: existingRaw,
-          error: findError,
-        } = await supabase
-          .from("holdings")
-          .select(
-            "id, amount, cost, active"
-          )
-          .eq(
-            "code",
-            code
-          )
-          .maybeSingle();
-
-        if (findError) {
-          throw findError;
-        }
-
-        const existing =
-          existingRaw as unknown as HoldingBalanceRow | null;
-
-        if (existing) {
-          const {
-            error,
-          } = await supabase
-            .from("holdings")
-            .update({
-              amount:
-                Math.round(
-                  toNumber(
-                    existing.amount
-                  ) +
-                    cnyAmount
-                ),
-
-              cost:
-                Math.round(
-                  toNumber(
-                    existing.cost
-                  ) +
-                    cnyCost
-                ),
-
-              currency: "CNY",
-
-              active: true,
-
-              updated_at:
-                new Date().toISOString(),
-            })
-            .eq(
-              "id",
-              existing.id
-            );
-
-          if (error) {
-            throw error;
-          }
-        } else {
-          const {
-            error,
-          } = await supabase
-            .from("holdings")
-            .insert({
-              code,
-
-              name:
-                getCashName(
-                  market === "CN"
-                    ? "CN"
-                    : "HK",
-                  platform
-                ),
-
-              market,
-
-              category: "fixed_income",
-
-              amount:
-                Math.round(
-                  cnyAmount
-                ),
-
-              cost:
-                Math.round(
-                  cnyCost
-                ),
-
-              fee_cost: 0,
-
-              profit: 0,
-
-              profit_rate: 0,
-
-              currency: "CNY",
-
-              shares: null,
-
-              nav: null,
-
-              platform,
-
-              active: true,
-
-              skip_update: true,
-
-              updated_at:
-                new Date().toISOString(),
-            });
-
-          if (error) {
-            throw error;
-          }
-        }
-
-        return {
-          cnyAmount,
-
-          nativeCurrency:
-            "CNY" as Currency,
-
-          nativeAmount,
-
-          holdingCreated:
-            !existing,
-
-          nativeCreated: false,
-
-          securityCostBasisCny: 0,
-
-          securityNativeAmount: 0,
-
-          securityNativeCostBasis: 0,
-
-          securityNativeCurrency:
-            null,
-        };
-      }
-
-      // =================================================
-      // 非 CNY Cash
-      // =================================================
-
-      if (
-        !fxRate ||
-        fxRate <= 0
-      ) {
-        throw new Error(
-          `${currency} Cash Holding 缺少有效汇率`
-        );
-      }
-
-      if (
-        nativeAmount <= 0
-      ) {
-        throw new Error(
-          `${currency} Cash Holding 原币金额必须大于 0`
-        );
-      }
-
-      const {
-        data: existingRaw,
-        error:
-          findHoldingError,
-      } = await supabase
-        .from("holdings")
-        .select(
-          "id, amount, cost, active"
-        )
-        .eq(
-          "code",
-          code
-        )
-        .maybeSingle();
-
-      if (findHoldingError) {
-        throw findHoldingError;
-      }
-
-      const existing =
-        existingRaw as unknown as HoldingBalanceRow | null;
-
-      let holdingId: number;
-
-      let holdingCreated =
-        false;
-
-      if (existing) {
-        holdingId =
-          existing.id;
-
-        const {
-          error,
-        } = await supabase
-          .from("holdings")
-          .update({
-            amount:
-              Math.round(
-                toNumber(
-                  existing.amount
-                ) +
-                  cnyAmount
-              ),
-
-            cost:
-              Math.round(
-                toNumber(
-                  existing.cost
-                ) +
-                  cnyCost
-              ),
-
-            currency: "CNY",
-
-            active: true,
-
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq(
-            "id",
-            existing.id
-          );
-
-        if (error) {
-          throw error;
-        }
-      } else {
-        const {
-          data: insertedRaw,
-          error,
-        } = await supabase
-          .from("holdings")
-          .insert({
-            code,
-
-            name:
-              getCashName(
-                market === "CN"
-                  ? "CN"
-                  : "HK",
-                platform
-              ),
-
-            market,
-
-            category: "fixed_income",
-
-            amount:
-              Math.round(
-                cnyAmount
-              ),
-
-            cost:
-              Math.round(
-                cnyCost
-              ),
-
-            profit: 0,
-
-            profit_rate: 0,
-
-            currency: "CNY",
-
-            shares: null,
-
-            nav: null,
-
-            platform,
-
-            active: true,
-
-            skip_update: true,
-
-            updated_at:
-              new Date().toISOString(),
-          })
-          .select("id")
-          .single();
-
-        if (error) {
-          throw error;
-        }
-
-        holdingId =
-          Number(
-            (
-              insertedRaw as unknown as {
-                id: number;
-              }
-            ).id
-          );
-
-        holdingCreated =
-          true;
-      }
-
-      // =================================================
-      // 找 native row
-      // =================================================
-
-      const {
-        data: nativeRaw,
-        error:
-          nativeFindError,
-      } = await supabase
-        .from(
-          "holding_native_currency"
-        )
-        .select(
-          "id, holding_id, native_currency, native_amount, native_cost, fee_cost, updated_at"
-        )
-        .eq(
-          "holding_id",
-          holdingId
-        )
-        .maybeSingle();
-
-      if (nativeFindError) {
-        throw nativeFindError;
-      }
-
-      const native =
-        nativeRaw as unknown as HoldingNativeCurrency | null;
-
-      if (
-        native &&
-        native.native_currency !==
-          currency
-      ) {
-        throw new Error(
-          `Cash Holding ${code} 已存在 ${native.native_currency} 原币记录，不能写入 ${currency}`
-        );
-      }
-
-      let nativeCreated =
-        false;
-
-      // =================================================
-      // native 已存在
-      // =================================================
-
-      if (native) {
-        const {
-          error,
-        } = await supabase
-          .from(
-            "holding_native_currency"
-          )
-          .update({
-            native_amount:
-              toNumber(
-                native.native_amount
-              ) +
-              nativeAmount,
-
-            native_cost:
-              toNumber(
-                native.native_cost
-              ) +
-              nativeCost,
-
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq(
-            "id",
-            native.id
-          );
-
-        if (error) {
-          await supabase
-            .from("holdings")
-            .update({
-              amount:
-                Math.max(
-                  0,
-                  Math.round(
-                    toNumber(
-                      existing?.amount
-                    )
-                  )
-                ),
-
-              cost:
-                Math.max(
-                  0,
-                  Math.round(
-                    toNumber(
-                      existing?.cost
-                    )
-                  )
-                ),
-
-              active:
-                existing?.active !==
-                false,
-
-              currency: "CNY",
-
-              updated_at:
-                new Date().toISOString(),
-            })
-            .eq(
-              "id",
-              holdingId
-            );
-
-          throw error;
-        }
-      } else {
-        // =================================================
-        // native 不存在 → 创建
-        // =================================================
-
-        const {
-          error,
-        } = await supabase
-          .from(
-            "holding_native_currency"
-          )
-          .insert({
-            holding_id:
-              holdingId,
-
-            native_currency:
-              currency,
-
-            native_amount:
-              nativeAmount,
-
-            native_cost:
-              nativeCost,
-
-            updated_at:
-              new Date().toISOString(),
-          });
-
-        if (error) {
-          if (holdingCreated) {
-            await supabase
-              .from("holdings")
-              .delete()
-              .eq(
-                "id",
-                holdingId
-              );
-          } else if (existing) {
-            await supabase
-              .from("holdings")
-              .update({
-                amount:
-                  Math.max(
-                    0,
-                    Math.round(
-                      toNumber(
-                        existing.amount
-                      )
-                    )
-                  ),
-
-                cost:
-                  Math.max(
-                    0,
-                    Math.round(
-                      toNumber(
-                        existing.cost
-                      )
-                    )
-                  ),
-
-                active:
-                  existing.active !==
-                  false,
-
-                currency: "CNY",
-
-                updated_at:
-                  new Date().toISOString(),
-              })
-              .eq(
-                "id",
-                holdingId
-              );
-          }
-
-          throw error;
-        }
-
-        nativeCreated =
-          true;
-      }
-
-      return {
-        cnyAmount,
-
-        nativeCurrency:
-          currency,
-
-        nativeAmount,
-
-        holdingCreated,
-
-        nativeCreated,
-
-        securityCostBasisCny: 0,
-
-        securityNativeAmount: 0,
-
-        securityNativeCostBasis: 0,
-
-        securityNativeCurrency:
-          null,
-      };
-    };
-
-  // ===================================================
-  // 验证
-  // ===================================================
-
-  const validate = () => {
-    if (!transactionDate) {
-      throw new Error(
-        "请选择交易日期"
-      );
-    }
-
-    if (!assetCode.trim()) {
-      throw new Error(
-        "请输入资产代码"
-      );
-    }
-
-    if (!assetName.trim()) {
-      throw new Error(
-        "请输入资产名称"
-      );
-    }
-
-    if (!platform.trim()) {
-      throw new Error(
-        "请输入平台"
-      );
-    }
-
-    if (
-      scenario === "HOLDING" &&
-      !selectedHolding
-    ) {
-      throw new Error(
-        "HOLDING 交易必须选择 Holding"
-      );
-    }
-
-    if (
-      scenario === "NEW" &&
-      transactionType !== "BUY"
-    ) {
-      throw new Error(
-        "NEW 交易目前只能使用 BUY"
-      );
-    }
-
-    if (
-      scenario === "NEW" &&
-      !category
-    ) {
-      throw new Error(
-        "NEW 买入必须手动选择资产类别"
-      );
-    }
-
-    if (
-      scenario === "HOLDING" &&
-      !selectedHolding?.category
-    ) {
-      throw new Error(
-        "当前 Holding 没有 category"
-      );
-    }
-
-    const amount =
-      toNumber(tradeAmount);
-
-    const price =
-      toNumber(tradePrice);
-
-    const shareNumber =
-      toNumber(shares);
-
-    if (amount <= 0) {
-      throw new Error(
-        "交易金额必须大于 0"
-      );
-    }
-
-    if (price <= 0) {
-      throw new Error(
-        "交易单价必须大于 0"
-      );
-    }
-
-    if (shareNumber <= 0) {
-      throw new Error(
-        "Shares 必须大于 0"
-      );
-    }
-
-    // -------------------------------------------------
-    // SELL
-    // -------------------------------------------------
-
-    if (
-      transactionType === "SELL"
-    ) {
-      if (!selectedHolding) {
-        throw new Error(
-          "SELL 必须选择 Holding"
-        );
-      }
-
-      if (
-        currentShares <= 0
-      ) {
-        throw new Error(
-          "当前 Holding 没有可卖 Shares"
-        );
-      }
-
-      if (
-        shareNumber >
-        currentShares +
-          0.00000001
-      ) {
-        throw new Error(
-          `卖出 Shares 不能超过当前持有数量 ${formatNumber(
-            currentShares,
-            8
-          )}`
-        );
-      }
-
-      if (
-        sellCostBasisCny >
-        currentCostCny +
-          0.01
-      ) {
-        throw new Error(
-          "卖出扣减成本不能超过当前 Holding 成本"
-        );
-      }
-    }
-
-    // -------------------------------------------------
-    // FX
-    // -------------------------------------------------
-
-    if (
-      currency !== "CNY"
-    ) {
-      if (
-        !fxRate ||
-        fxRate <= 0
-      ) {
-        throw new Error(
-          `当前 ${currency} 交易需要有效汇率`
-        );
-      }
-
-      if (
-        (currency === "USD" ||
-          currency === "HKD") &&
-        fxRate === 1
-      ) {
-        throw new Error(
-          `${currency} 汇率不能为 1`
-        );
-      }
-    }
-
-    if (
-      tradeValueCny <= 0
-    ) {
-      throw new Error(
-        "CNY 交易金额必须大于 0"
-      );
-    }
-  };
-
-  // ===================================================
-  // 保存
-  // ===================================================
-
-  const handleSave = async () => {
     try {
-      setSaving(true);
-
-      setMessage("");
+      setLoading(true);
       setError("");
-      setCashHoldingResult(null);
 
-      validate();
-
-      const priceNumber =
-        toNumber(tradePrice);
-
-      const shareNumber =
-        toNumber(shares);
-
-      const feeNumber =
-        toNumber(fee);
-
-      const grossTradeAmountNative =
-        priceNumber * shareNumber;
-
-      // BUY 的交易金额永远以「单价 × Shares」为准，
-      // 不读取可能曾经包含手续费的 tradeAmount 状态。
-      const amountNumber =
-        transactionType === "BUY"
-          ? grossTradeAmountNative
-          : toNumber(tradeAmount);
-
-      const grossTradeValueCny =
-        currency === "CNY"
-          ? grossTradeAmountNative
-          : grossTradeAmountNative *
-            (fxRate || 0);
-
-      const feeCny =
-        currency === "CNY"
-          ? feeNumber
-          : feeNumber *
-            (fxRate || 0);
-
-      const finalCny =
-        currency === "CNY"
-          ? amountNumber
-          : amountNumber * (fxRate || 0);
-
-      const finalCostBasis =
-        transactionType === "SELL"
-          ? sellCostBasisCny
-          : 0;
-
-      const finalCategory =
-        scenario === "HOLDING"
-          ? selectedHolding?.category ||
-            null
-          : category || null;
-
-      const market =
-        region === "CN"
-          ? "CN"
-          : "HK";
-
-      const finalCashAssetCode =
-        transactionType === "SELL"
-          ? cashAssetCode.trim() ||
-            getCashDefaultCode(
-              region,
-              platform
-            )
-          : null;
-
-      // SELL → Cash Holding_native_currency
-      // 原币金额/成本允许人工调整；未调整时默认净卖出金额。
-      const defaultCashNativeValue = Math.max(
-        0,
-        amountNumber - feeNumber
+      const response = await fetch(
+        `/api/record/${recordId}`,
+        {
+          cache: "no-store",
+        }
       );
 
-      const finalCashNativeAmount =
-        transactionType === "SELL" &&
-        currency !== "CNY"
-          ? Math.max(
-              0,
-              cashNativeAmount !== ""
-                ? toNumber(cashNativeAmount)
-                : defaultCashNativeValue
-            )
-          : defaultCashNativeValue;
+      const data = await response.json();
 
-      const finalCashNativeCost =
-        transactionType === "SELL" &&
-        currency !== "CNY"
-          ? Math.max(
-              0,
-              cashNativeCost !== ""
-                ? toNumber(cashNativeCost)
-                : defaultCashNativeValue
-            )
-          : defaultCashNativeValue;
-
-      // Cash Holding.amount / cost：
-      // CNY SELL → 用户可直接修改 CNY amount / cost；这里就是最终写入值。
-      // 非 CNY SELL → 不允许直接修改 CNY amount / cost；
-      //              最终值严格来自 Cash Holding_native_currency.native_amount / native_cost × FX。
-      const defaultCashCnyValue = Math.max(
-        0,
-        finalCny - feeCny
-      );
-
-      const finalCashCnyAmount =
-        currency === "CNY"
-          ? Math.max(
-              0,
-              toNumber(cashCnyAmount) > 0
-                ? toNumber(cashCnyAmount)
-                : defaultCashCnyValue
-            )
-          : Math.max(
-              0,
-              finalCashNativeAmount * (fxRate || 0)
-            );
-
-      const finalCashCnyCost =
-        currency === "CNY"
-          ? Math.max(
-              0,
-              toNumber(cashCnyCost) > 0
-                ? toNumber(cashCnyCost)
-                : defaultCashCnyValue
-            )
-          : Math.max(
-              0,
-              finalCashNativeCost * (fxRate || 0)
-            );
-
-      // =================================================
-      // 1. 写 investment_transactions
-      //
-      // 重要：
-      // investment_transactions 没有：
-      //   region
-      //   holding_id
-      //
-      // 所以这里绝对不能写这两个字段。
-      // =================================================
-
-      const {
-        data: insertedTransaction,
-        error:
-          transactionError,
-      } = await supabase
-        .from(
-          "investment_transactions"
-        )
-        .insert({
-          transaction_date:
-            transactionDate,
-
-          transaction_type:
-            transactionType,
-
-
-          market,
-
-          // 注意：
-          // 这里没有 region
-
-          asset_code:
-            assetCode.trim(),
-
-          asset_name:
-            assetName.trim(),
-
-          platform:
-            platform.trim(),
-
-          category:
-            finalCategory,
-
-          currency,
-
-          trade_amount:
-            amountNumber,
-
-          trade_price:
-            priceNumber,
-
-          shares:
-            shareNumber,
-
-          fee:
-            feeNumber,
-
-          fx_rate:
-            currency === "CNY"
-              ? 1
-              : fxRate,
-
-          trade_value_cny:
-            finalCny,
-
-          cost_basis_cny:
-            transactionType === "SELL"
-              ? finalCostBasis
-              : grossTradeValueCny,
-
-          cash_asset_code:
-            finalCashAssetCode,
-
-          remark:
-            remark.trim() ||
-            null,
-        })
-        .select("id")
-        .single();
-
-      if (transactionError) {
-        throw transactionError;
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "获取记录失败"
+        );
       }
 
-      const transactionId =
-        insertedTransaction?.id;
-
-      try {
-        // =================================================
-        // 2. HOLDING BUY
-        // =================================================
-
-        if (
-          scenario === "HOLDING" &&
-          transactionType === "BUY" &&
-          selectedHolding
-        ) {
-          await updateSecurityHolding({
-            holding:
-              selectedHolding,
-
-            type: "BUY",
-
-            shareCount:
-              shareNumber,
-
-            tradeAmountNative:
-              amountNumber,
-
-            grossTradeAmountNative:
-              grossTradeAmountNative,
-
-            grossTradeValueCny:
-              grossTradeValueCny,
-
-            tradeValueCny:
-              finalCny,
-
-            sellCostBasisCny:
-              0,
-
-            feeNative:
-              feeNumber,
-
-            feeCny:
-              feeCny,
-
-            currency,
-          });
-        }
-
-        // =================================================
-        // 3. NEW BUY
-        // =================================================
-
-        if (
-          scenario === "NEW" &&
-          transactionType === "BUY"
-        ) {
-          await createNewSecurityHolding({
-            code:
-              assetCode.trim(),
-
-            name:
-              assetName.trim(),
-
-            market,
-
-            category:
-              finalCategory!,
-
-            amountCny:
-              grossTradeValueCny,
-
-            costCny:
-              grossTradeValueCny,
-
-            shares:
-              shareNumber,
-
-            currency,
-
-            nav:
-              priceNumber,
-
-            platform:
-              platform.trim(),
-
-            nativeAmount:
-              grossTradeAmountNative,
-
-            feeNative:
-              feeNumber,
-
-            feeCny:
-              feeCny,
-          });
-        }
-
-        // =================================================
-        // 4. HOLDING SELL
-        // =================================================
-
-        if (
-          scenario === "HOLDING" &&
-          transactionType === "SELL" &&
-          selectedHolding
-        ) {
-          // -----------------------------------------------
-          // 4.1 Security Holding
-          // -----------------------------------------------
-
-          const securityNativeAmount =
-            currency !== "CNY"
-              ? amountNumber
-              : 0;
-
-          const securityNativeCostBasis =
-            currency !== "CNY" &&
-            toNumber(
-              selectedHolding.native_cost
-            ) > 0 &&
-            toNumber(
-              selectedHolding.shares
-            ) > 0
-              ? toNumber(
-                  selectedHolding.native_cost
-                ) *
-                (shareNumber /
-                  toNumber(
-                    selectedHolding.shares
-                  ))
-              : 0;
-
-          await updateSecurityHolding({
-            holding:
-              selectedHolding,
-
-            type: "SELL",
-
-            shareCount:
-              shareNumber,
-
-            tradeAmountNative:
-              amountNumber,
-
-            grossTradeAmountNative:
-              grossTradeAmountNative,
-
-            grossTradeValueCny:
-              grossTradeValueCny,
-
-            tradeValueCny:
-              finalCny,
-
-            sellCostBasisCny:
-              finalCostBasis,
-
-            feeNative:
-              feeNumber,
-
-            feeCny:
-              feeCny,
-
-            currency,
-          });
-
-          // -----------------------------------------------
-          // 4.2 Cash Holding
-          // -----------------------------------------------
-
-          let cashResult:
-            Awaited<
-              ReturnType<
-                typeof updateCashHolding
-              >
-            >;
-
-          try {
-            cashResult =
-              await updateCashHolding({
-                code:
-                  finalCashAssetCode!,
-
-                currency,
-
-                market,
-
-                platform:
-                  platform.trim(),
-
-                cnyAmount:
-                  finalCashCnyAmount,
-
-                cnyCost:
-                  finalCashCnyCost,
-
-                nativeAmount:
-                  finalCashNativeAmount,
-
-                nativeCost:
-                  finalCashNativeCost,
-
-                fxRate:
-                  currency === "CNY"
-                    ? 1
-                    : fxRate!,
-              });
-          } catch (cashError) {
-            // Cash 写入失败：
-            // Security Holding + native 一起恢复
-            await restoreSecurityHolding(
-              selectedHolding
-            );
-
-            throw cashError;
-          }
-
-          setCashHoldingResult({
-            ...cashResult,
-
-            securityCostBasisCny:
-              finalCostBasis,
-
-            securityNativeAmount,
-
-            securityNativeCostBasis,
-
-            securityNativeCurrency:
-              currency !== "CNY"
-                ? currency
-                : null,
-          });
-        }
-      } catch (holdingError) {
-        // =================================================
-        // Holding 更新失败
-        // 删除 transaction
-        // =================================================
-
-        if (transactionId) {
-          await supabase
-            .from(
-              "investment_transactions"
-            )
-            .delete()
-            .eq(
-              "id",
-              transactionId
-            );
-        }
-
-        throw holdingError;
-      }
-
-      // =================================================
-      // 5. 成功消息
-      // =================================================
+      setRecord(data?.record ?? null);
+      setTitle(data?.record?.title ?? "");
 
       if (
-        scenario === "NEW"
+        editor &&
+        data?.record?.content
       ) {
-        setMessage(
-          "NEW BUY 已保存，交易记录和新的 Holding 都已创建"
+        editor.commands.setContent(
+          data.record.content
         );
-      } else if (
-        transactionType === "BUY"
-      ) {
-        setMessage(
-          "BUY 已保存，Holding 已更新"
-        );
-      } else {
-        setMessage(
-          "SELL 已保存，Holding 与 Cash Holding 已同步更新"
+      }
+    } catch (error) {
+      console.error(
+        "获取记录失败:",
+        error
+      );
+
+      setError(
+        error instanceof Error
+          ? error.message
+          : "获取记录失败"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ===================================================
+  // Load Tasks
+  // ===================================================
+
+  async function loadTasks() {
+    if (!recordId) return;
+
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/tasks`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "获取任务失败"
         );
       }
 
-      // =================================================
-      // 6. 清空表单
-      // =================================================
-
-      setSelectedHoldingId("");
-
-      setAssetCode("");
-      setAssetName("");
-      setPlatform("");
-      setCategory("");
-
-      setTradeAmount("");
-      setTradePrice("");
-      setShares("");
-      setFee("");
-
-      setFxRate(
-        currency === "CNY"
-          ? 1
-          : null
+      setTasks(
+        Array.isArray(data?.tasks)
+          ? data.tasks
+          : []
       );
 
-      setCashAssetCode("");
-
-      setRemark("");
-
-      await loadData();
-    } catch (err: any) {
-      const errorInfo = {
-        message:
-          err?.message ?? null,
-
-        details:
-          err?.details ?? null,
-
-        hint:
-          err?.hint ?? null,
-
-        code:
-          err?.code ?? null,
-
-        name:
-          err?.name ?? null,
-
-        status:
-          err?.status ?? null,
-      };
-
-      // 不使用 console.error，
-      // 避免 Next.js / Turbopack Console Error
-      console.log(
-        "=== INVESTMENT SAVE ERROR ==="
+      setProgress(
+        data?.progress ?? {
+          completed: 0,
+          total: 0,
+        }
+      );
+    } catch (error) {
+      console.error(
+        "获取任务失败:",
+        error
       );
 
-      console.log(
-        errorInfo
+      setError(
+        error instanceof Error
+          ? error.message
+          : "获取任务失败"
       );
-
-      const message =
-        [
-          errorInfo.message,
-
-          errorInfo.details,
-
-          errorInfo.hint,
-
-          errorInfo.code
-            ? `code=${errorInfo.code}`
-            : "",
-        ]
-          .filter(Boolean)
-          .join(" | ") ||
-        "保存交易失败";
-
-      setError(message);
-    } finally {
-      setSaving(false);
     }
-  };
+  }
 
   // ===================================================
-  // 当前交易币种
+  // Load Files
   // ===================================================
 
-  const nativeCurrency =
-    region === "CN"
-      ? "CNY"
-      : currency;
+  async function loadFiles() {
+    if (!recordId) return;
+
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/files`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "获取附件失败"
+        );
+      }
+
+      setFiles(
+        Array.isArray(data?.files)
+          ? data.files
+          : []
+      );
+    } catch (error) {
+      console.error(
+        "获取附件失败:",
+        error
+      );
+
+      setError(
+        error instanceof Error
+          ? error.message
+          : "获取附件失败"
+      );
+    }
+  }
 
   // ===================================================
-  // UI
+  // Initial Load
+  // ===================================================
+
+  useEffect(() => {
+    if (!recordId) return;
+
+    loadRecord();
+    loadTasks();
+    loadFiles();
+  }, [recordId]);
+
+  // ===================================================
+  // Editor Sync
+  // ===================================================
+
+  useEffect(() => {
+    if (!editor || !record) return;
+
+    editor.commands.setContent(
+      record.content
+    );
+  }, [editor, record]);
+
+  // ===================================================
+  // Save Title
+  // ===================================================
+
+  async function saveTitle() {
+    if (!recordId) return;
+
+    const value = title.trim();
+
+    if (!value) {
+      alert("记录名称不能为空");
+      return;
+    }
+
+    try {
+      setSavingTitle(true);
+
+      const response = await fetch(
+        `/api/record/${recordId}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            title: value,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "保存标题失败"
+        );
+      }
+
+      setRecord(
+        data?.record ?? null
+      );
+
+      setTitle(
+        data?.record?.title ??
+          value
+      );
+    } catch (error) {
+      console.error(
+        "保存标题失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "保存标题失败"
+      );
+    } finally {
+      setSavingTitle(false);
+    }
+  }
+
+  // ===================================================
+  // Save Content
+  // ===================================================
+
+  async function saveContent() {
+    if (!recordId || !editor) return;
+
+    try {
+      setSavingContent(true);
+
+      const content =
+        editor.getJSON();
+
+      const response = await fetch(
+        `/api/record/${recordId}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            content,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "保存内容失败"
+        );
+      }
+
+      setRecord(
+        data?.record ?? null
+      );
+    } catch (error) {
+      console.error(
+        "保存内容失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "保存内容失败"
+      );
+    } finally {
+      setSavingContent(false);
+    }
+  }
+
+  // ===================================================
+  // Create One Task
+  // ===================================================
+
+  async function createTask(
+    taskTitle: string,
+    condition: string | null = null,
+    holdingId: number | null = null
+  ) {
+    const value =
+      taskTitle.trim();
+
+    if (!value || !recordId) {
+      return;
+    }
+
+    const response = await fetch(
+      `/api/record/${recordId}/tasks`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          title: value,
+          condition,
+          holding_id: holdingId,
+        }),
+      }
+    );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error ||
+          "新增任务失败"
+      );
+    }
+  }
+
+  // ===================================================
+  // Add One Task
+  // ===================================================
+
+  async function handleAddTask() {
+    if (!newTask.trim()) return;
+
+    try {
+      setAddingTask(true);
+
+      await createTask(newTask);
+
+      setNewTask("");
+
+      await loadTasks();
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "新增任务失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "新增任务失败"
+      );
+    } finally {
+      setAddingTask(false);
+    }
+  }
+
+  // ===================================================
+  // Parse Batch Tasks
+  // ===================================================
+
+  function buildBatchDrafts() {
+    const lines = batchText
+      .split(/\r?\n/)
+      .map(cleanBatchTaskTitle)
+      .filter(Boolean);
+
+    const uniqueLines: string[] = [];
+
+    for (const line of lines) {
+      if (
+        !uniqueLines.includes(line)
+      ) {
+        uniqueLines.push(line);
+      }
+    }
+
+    return uniqueLines.map(
+      (taskTitle, index) => ({
+        id: `batch-${Date.now()}-${index}`,
+        title: taskTitle,
+        assetRelated:
+          isLikelyAssetTask(
+            taskTitle
+          ),
+        condition: null,
+        holdingId: null,
+      })
+    );
+  }
+
+  // ===================================================
+  // Preview Batch
+  // ===================================================
+
+  function handlePreviewBatchTasks() {
+    if (!batchText.trim()) {
+      return;
+    }
+
+    const drafts =
+      buildBatchDrafts();
+
+    if (!drafts.length) {
+      return;
+    }
+
+    setBatchDrafts(drafts);
+    setShowBatchReview(true);
+  }
+
+  // ===================================================
+  // Toggle Batch Asset Recognition
+  // ===================================================
+
+  function toggleBatchAssetRelated(
+    id: string
+  ) {
+    setBatchDrafts(
+      (current) =>
+        current.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                assetRelated:
+                  !item.assetRelated,
+              }
+            : item
+        )
+    );
+  }
+
+  // ===================================================
+  // Change Batch Condition
+  // ===================================================
+
+  function changeBatchCondition(
+    id: string,
+    condition: string | null
+  ) {
+    setBatchDrafts(
+      (current) =>
+        current.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                condition,
+              }
+            : item
+        )
+    );
+  }
+
+  // ===================================================
+  // Remove Batch Draft
+  // ===================================================
+
+  function removeBatchDraft(
+    id: string
+  ) {
+    setBatchDrafts(
+      (current) =>
+        current.filter(
+          (item) =>
+            item.id !== id
+        )
+    );
+  }
+
+  // ===================================================
+  // Confirm Batch Add
+  // ===================================================
+
+  async function handleConfirmBatchAdd() {
+    if (
+      !recordId ||
+      !batchDrafts.length
+    ) {
+      return;
+    }
+
+    try {
+      setAddingTask(true);
+
+      for (const draft of batchDrafts) {
+        await createTask(
+          draft.title,
+          draft.condition,
+          draft.holdingId
+        );
+      }
+
+      setBatchText("");
+      setBatchDrafts([]);
+      setShowBatchReview(false);
+
+      await loadTasks();
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "确认批量新增任务失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "批量新增任务失败"
+      );
+    } finally {
+      setAddingTask(false);
+    }
+  }
+
+  // ===================================================
+  // Cancel Batch Review
+  // ===================================================
+
+  function handleCancelBatchReview() {
+    setShowBatchReview(false);
+  }
+
+  // ===================================================
+  // Toggle Task
+  // ===================================================
+
+  async function handleToggleTask(
+    task: RecordTask
+  ) {
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/tasks`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            taskId: task.id,
+            completed:
+              !task.completed,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "更新任务失败"
+        );
+      }
+
+      await loadTasks();
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "更新任务失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "更新任务失败"
+      );
+    }
+  }
+
+  // ===================================================
+  // Delete Task
+  // ===================================================
+
+  async function handleDeleteTask(
+    task: RecordTask
+  ) {
+    const confirmed =
+      window.confirm(
+        `确定删除任务「${task.title}」吗？`
+      );
+
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/tasks`,
+        {
+          method: "DELETE",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            taskId: task.id,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "删除任务失败"
+        );
+      }
+
+      await loadTasks();
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "删除任务失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "删除任务失败"
+      );
+    }
+  }
+
+  // ===================================================
+  // Drag
+  // ===================================================
+
+  async function handleDragEnd(
+    event: DragEndEvent
+  ) {
+    const { active, over } = event;
+
+    if (
+      !over ||
+      active.id === over.id
+    ) {
+      return;
+    }
+
+    const oldIndex =
+      tasks.findIndex(
+        (task) =>
+          task.id === active.id
+      );
+
+    const newIndex =
+      tasks.findIndex(
+        (task) =>
+          task.id === over.id
+      );
+
+    if (
+      oldIndex < 0 ||
+      newIndex < 0
+    ) {
+      return;
+    }
+
+    const nextTasks =
+      arrayMove(
+        tasks,
+        oldIndex,
+        newIndex
+      );
+
+    setTasks(nextTasks);
+
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/tasks`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            action: "reorder",
+            taskIds:
+              nextTasks.map(
+                (task) =>
+                  task.id
+              ),
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "保存任务顺序失败"
+        );
+      }
+
+      if (
+        Array.isArray(
+          data?.tasks
+        )
+      ) {
+        setTasks(
+          data.tasks
+        );
+      }
+
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "保存任务顺序失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "保存任务顺序失败"
+      );
+
+      await loadTasks();
+    }
+  }
+
+  // ===================================================
+  // Upload File
+  // ===================================================
+
+  async function handleUploadFile(
+    event: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const file =
+      event.target.files?.[0];
+
+    event.target.value = "";
+
+    if (!file || !recordId) {
+      return;
+    }
+
+    try {
+      setUploading(true);
+
+      const formData =
+        new FormData();
+
+      formData.append(
+        "file",
+        file
+      );
+
+      const response = await fetch(
+        `/api/record/${recordId}/files`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "上传文件失败"
+        );
+      }
+
+      await loadFiles();
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "上传文件失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "上传文件失败"
+      );
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // ===================================================
+  // Open File
+  // ===================================================
+
+  async function handleOpenFile(
+    file: RecordFile
+  ) {
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/files?fileId=${encodeURIComponent(
+          file.id
+        )}`
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "打开附件失败"
+        );
+      }
+
+      if (data?.url) {
+        window.open(
+          data.url,
+          "_blank",
+          "noopener,noreferrer"
+        );
+      }
+    } catch (error) {
+      console.error(
+        "打开附件失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "打开附件失败"
+      );
+    }
+  }
+
+  // ===================================================
+  // Delete File
+  // ===================================================
+
+  async function handleDeleteFile(
+    file: RecordFile
+  ) {
+    const confirmed =
+      window.confirm(
+        `确定删除附件「${file.file_name}」吗？`
+      );
+
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `/api/record/${recordId}/files`,
+        {
+          method: "DELETE",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            fileId: file.id,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "删除附件失败"
+        );
+      }
+
+      await loadFiles();
+      await loadRecord();
+    } catch (error) {
+      console.error(
+        "删除附件失败:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "删除附件失败"
+      );
+    }
+  }
+
+  // ===================================================
+  // Memo
+  // ===================================================
+
+  const taskIds = useMemo(
+    () =>
+      tasks.map(
+        (task) =>
+          task.id
+      ),
+    [tasks]
+  );
+
+  const assetDraftCount =
+    batchDrafts.filter(
+      (item) =>
+        item.assetRelated
+    ).length;
+
+  // ===================================================
+  // Loading
+  // ===================================================
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-gray-50">
+        <div className="mx-auto max-w-6xl px-6 py-8">
+          <div className="text-sm text-gray-400">
+            正在加载...
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ===================================================
+  // Not Found
+  // ===================================================
+
+  if (!record) {
+    return (
+      <main className="min-h-screen bg-gray-50">
+        <div className="mx-auto max-w-6xl px-6 py-8">
+          <button
+            type="button"
+            onClick={() =>
+              router.push(
+                "/record"
+              )
+            }
+            className="mb-6 text-sm text-gray-500 hover:text-gray-900"
+          >
+            ← 返回
+          </button>
+
+          <div className="rounded-xl border border-gray-200 bg-white p-8">
+            <div className="text-sm text-red-600">
+              {error ||
+                "记录不存在"}
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ===================================================
+  // Main
   // ===================================================
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <TopBar title="投资交易" />
+    <main className="min-h-screen bg-gray-50">
+      <div className="mx-auto max-w-6xl px-6 py-8">
+        {/* 返回 */}
+        <button
+          type="button"
+          onClick={() =>
+            router.push(
+              "/record"
+            )
+          }
+          className="mb-6 text-sm text-gray-500 transition hover:text-gray-900"
+        >
+          ← 返回
+        </button>
 
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* ================================================= */}
-        {/* Header */}
-        {/* ================================================= */}
+        {/* =================================================
+            标题
+        ================================================= */}
 
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold">
-            投资交易
-          </h1>
+        <section className="mb-8">
+          <div className="flex items-center gap-3">
+            <input
+              value={title}
+              onChange={(event) =>
+                setTitle(
+                  event.target.value
+                )
+              }
+              onBlur={saveTitle}
+              onKeyDown={(event) => {
+                if (
+                  event.key ===
+                  "Enter"
+                ) {
+                  event.currentTarget.blur();
+                }
+              }}
+              className="min-w-0 flex-1 border-0 bg-transparent p-0 text-2xl font-semibold text-gray-900 outline-none"
+            />
 
-          <p className="mt-1 text-sm text-slate-500">
-            记录 BUY / SELL，并根据交易类型更新或创建 Holding。
-          </p>
-        </div>
-
-        {/* ================================================= */}
-        {/* Message */}
-        {/* ================================================= */}
-
-        {message && (
-          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            {message}
+            {savingTitle && (
+              <span className="text-xs text-gray-400">
+                保存中...
+              </span>
+            )}
           </div>
-        )}
 
-        {error && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
+          <div className="mt-2 text-sm text-gray-500">
+            最后更新：
+            {" "}
+            {formatDateTime(
+              record.updated_at
+            )}
           </div>
-        )}
+        </section>
 
-        {/* ================================================= */}
-        {/* Cash Holding Result */}
-        {/* ================================================= */}
+        {/* =================================================
+            正文
+        ================================================= */}
 
-        {cashHoldingResult && (
-          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-            <div className="mb-3 text-sm font-semibold text-emerald-900">
-              SELL → Cash Holding 写入结果
-            </div>
+        <section className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <div className="flex flex-wrap items-center gap-1 border-b border-gray-200 bg-gray-50 p-2">
+            <button
+              type="button"
+              onClick={() =>
+                editor
+                  ?.chain()
+                  .focus()
+                  .toggleBold()
+                  .run()
+              }
+              className="rounded px-3 py-1.5 text-sm font-bold hover:bg-gray-200"
+            >
+              B
+            </button>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="rounded-lg border border-emerald-200 bg-white p-4">
-                <div className="text-xs text-emerald-700">
-                  Cash Holding 增加（写入 Holding）
-                </div>
+            <button
+              type="button"
+              onClick={() =>
+                editor
+                  ?.chain()
+                  .focus()
+                  .toggleHeading({
+                    level: 1,
+                  })
+                  .run()
+              }
+              className="rounded px-3 py-1.5 text-sm font-semibold hover:bg-gray-200"
+            >
+              H1
+            </button>
 
-                <div className="mt-1 text-xl font-bold text-emerald-800">
-                  +¥
-                  {formatNumber(
-                    cashHoldingResult.cnyAmount,
-                    2
-                  )}
-                </div>
-              </div>
+            <button
+              type="button"
+              onClick={() =>
+                editor
+                  ?.chain()
+                  .focus()
+                  .toggleHeading({
+                    level: 2,
+                  })
+                  .run()
+              }
+              className="rounded px-3 py-1.5 text-sm font-semibold hover:bg-gray-200"
+            >
+              H2
+            </button>
 
-              <div className="rounded-lg border border-emerald-200 bg-white p-4">
-                <div className="text-xs text-emerald-700">
-                  {cashHoldingResult.nativeCreated
-                    ? "新建（Holding_native_currency）"
-                    : "写入（Holding_native_currency）"}
-                </div>
+            <button
+              type="button"
+              onClick={() =>
+                editor
+                  ?.chain()
+                  .focus()
+                  .toggleBulletList()
+                  .run()
+              }
+              className="rounded px-3 py-1.5 text-sm hover:bg-gray-200"
+            >
+              • 列表
+            </button>
 
-                <div className="mt-1 text-xl font-bold text-emerald-800">
-                  +
-                  {
-                    cashHoldingResult.nativeCurrency
-                  }{" "}
-                  {formatNumber(
-                    cashHoldingResult.nativeAmount,
-                    2
-                  )}
-                </div>
+            <button
+              type="button"
+              onClick={() =>
+                editor
+                  ?.chain()
+                  .focus()
+                  .toggleOrderedList()
+                  .run()
+              }
+              className="rounded px-3 py-1.5 text-sm hover:bg-gray-200"
+            >
+              1. 列表
+            </button>
 
-                {cashHoldingResult.nativeCurrency !==
-                  "CNY" && (
-                  <div className="mt-2 text-sm font-semibold text-emerald-800">
-                    native_cost +
-                    {
-                      cashHoldingResult.nativeCurrency
-                    }{" "}
-                    {formatNumber(
-                      cashHoldingResult.nativeAmount,
-                      2
-                    )}
-                  </div>
-                )}
-              </div>
+            <button
+              type="button"
+              onClick={() =>
+                editor
+                  ?.chain()
+                  .focus()
+                  .setHorizontalRule()
+                  .run()
+              }
+              className="rounded px-3 py-1.5 text-sm hover:bg-gray-200"
+            >
+              ─
+            </button>
 
-              <div className="rounded-lg border border-amber-200 bg-white p-4">
-                <div className="text-xs text-amber-700">
-                  证券 Holding SELL 扣减成本
-                </div>
+            <div className="mx-1 h-5 w-px bg-gray-300" />
 
-                <div className="mt-1 text-lg font-bold text-amber-800">
-                  -¥
-                  {formatNumber(
-                    cashHoldingResult.securityCostBasisCny,
-                    2
-                  )}
-                </div>
-
-                {cashHoldingResult.securityNativeCurrency && (
-                  <>
-                    <div className="mt-2 text-sm font-semibold text-amber-800">
-                      Holding_native_currency.native_amount：
-                      {
-                        cashHoldingResult.securityNativeCurrency
-                      }{" "}
-                      -
-                      {formatNumber(
-                        cashHoldingResult.securityNativeAmount,
-                        2
-                      )}
-                    </div>
-
-                    <div className="mt-1 text-sm font-semibold text-amber-800">
-                      Holding_native_currency.native_cost：
-                      {
-                        cashHoldingResult.securityNativeCurrency
-                      }{" "}
-                      -
-                      {formatNumber(
-                        cashHoldingResult.securityNativeCostBasis,
-                        2
-                      )}
-                    </div>
-                  </>
-                )}
-
-                <div className="mt-2 text-xs leading-5 text-slate-500">
-                  native_amount 按本次卖出成交金额扣减；
-                  native_cost 按卖出 Shares 对应的历史成本扣减，
-                  不按卖出成交金额扣减。
-                </div>
-              </div>
-            </div>
+            {[
+              {
+                label: "红",
+                color: "#dc2626",
+              },
+              {
+                label: "橙",
+                color: "#ea580c",
+              },
+              {
+                label: "黄",
+                color: "#ca8a04",
+              },
+              {
+                label: "绿",
+                color: "#16a34a",
+              },
+              {
+                label: "蓝",
+                color: "#2563eb",
+              },
+              {
+                label: "黑",
+                color: "#111827",
+              },
+            ].map((item) => (
+              <button
+                key={item.color}
+                type="button"
+                onClick={() =>
+                  editor
+                    ?.chain()
+                    .focus()
+                    .setColor(
+                      item.color
+                    )
+                    .run()
+                }
+                className="rounded px-2 py-1.5 text-xs hover:bg-gray-200"
+                style={{
+                  color:
+                    item.color,
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
-        )}
 
-        {/* ================================================= */}
-        {/* 主表单 */}
-        {/* ================================================= */}
+          <EditorContent
+            editor={editor}
+          />
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* ================================================= */}
-          {/* 左侧 */}
-          {/* ================================================= */}
+          <div className="flex justify-end border-t border-gray-100 px-5 py-3">
+            <button
+              type="button"
+              onClick={saveContent}
+              disabled={
+                savingContent
+              }
+              className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingContent
+                ? "保存中..."
+                : "保存内容"}
+            </button>
+          </div>
+        </section>
 
-          <section className="rounded-xl border bg-white p-5 shadow-sm lg:col-span-2">
-            <div className="mb-5">
-              <h2 className="text-lg font-semibold">
-                交易信息
+        {/* =================================================
+            执行任务
+        ================================================= */}
+
+        <section className="mb-8 rounded-xl border border-gray-200 bg-gray-50 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">
+                执行任务
               </h2>
 
-              <p className="mt-1 text-xs text-slate-500">
-                带“写入 Holding”的项目会实际修改或创建 holdings 表记录。
-              </p>
-            </div>
-
-            {/* ================================================= */}
-            {/* Region */}
-            {/* ================================================= */}
-
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  市场
-                </label>
-
-                <select
-                  value={region}
-                  onChange={(e) =>
-                    handleRegionChange(
-                      e.target
-                        .value as Region
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                >
-                  <option value="CN">
-                    中国大陆
-                  </option>
-
-                  <option value="HK">
-                    港美股
-                  </option>
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  交易场景
-                </label>
-
-                <select
-                  value={scenario}
-                  onChange={(e) =>
-                    handleScenarioChange(
-                      e.target
-                        .value as TransactionScenario
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                >
-                  <option value="HOLDING">
-                    已有 Holding
-                  </option>
-
-                  <option value="NEW">
-                    新买入
-                  </option>
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  交易类型
-                </label>
-
-                <select
-                  value={
-                    transactionType
-                  }
-                  onChange={(e) =>
-                    handleTransactionTypeChange(
-                      e.target
-                        .value as TransactionType
-                    )
-                  }
-                  disabled={
-                    scenario === "NEW"
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-slate-100"
-                >
-                  <option value="BUY">
-                    BUY 买入
-                  </option>
-
-                  <option value="SELL">
-                    SELL 卖出
-                  </option>
-                </select>
+              <div className="mt-1 text-xs text-gray-500">
+                进度：
+                {" "}
+                {progress.completed}
+                {" / "}
+                {progress.total}
               </div>
             </div>
+          </div>
 
-            {/* ================================================= */}
-            {/* Holding */}
-            {/* ================================================= */}
+          {/* =================================================
+              任务列表
+          ================================================= */}
 
-            {scenario ===
-              "HOLDING" && (
-              <div className="mt-5">
-                <label className="mb-1 block text-sm font-medium">
-                  选择 Holding
-                </label>
-
-                <select
-                  value={
-                    selectedHoldingId
+          <div className="overflow-hidden rounded-lg bg-white">
+            {tasks.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-gray-400">
+                暂无任务
+              </div>
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={
+                  closestCenter
+                }
+                onDragEnd={
+                  handleDragEnd
+                }
+              >
+                <SortableContext
+                  items={taskIds}
+                  strategy={
+                    verticalListSortingStrategy
                   }
-                  onChange={(e) =>
-                    handleHoldingChange(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
                 >
-                  <option value="">
-                    -- 请选择 Holding --
-                  </option>
-
-                  {regionHoldings.map(
-                    (holding) => (
-                      <option
+                  {tasks.map(
+                    (task) => (
+                      <SortableTaskRow
                         key={
-                          holding.id
+                          task.id
                         }
-                        value={
-                          holding.id
+                        task={task}
+                        onToggle={
+                          handleToggleTask
                         }
-                      >
-                        {holding.name}（
-                        {holding.code}）
-                      </option>
+                        onDelete={
+                          handleDeleteTask
+                        }
+                      />
                     )
                   )}
-                </select>
-              </div>
+                </SortableContext>
+              </DndContext>
             )}
-
-            {/* ================================================= */}
-            {/* Holding 当前信息 */}
-            {/* ================================================= */}
-
-            {scenario ===
-              "HOLDING" &&
-              selectedHolding && (
-                <div className="mt-4 grid gap-3 rounded-lg bg-slate-50 p-4 sm:grid-cols-4">
-                  <div>
-                    <div className="text-xs text-slate-500">
-                      当前 Shares
-                    </div>
-
-                    <div className="mt-1 font-semibold">
-                      {formatNumber(
-                        currentShares,
-                        2
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs text-slate-500">
-                      当前成本
-                    </div>
-
-                    <div className="mt-1 font-semibold">
-                      ¥
-                      {formatNumber(
-                        currentCostCny,
-                        2
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs text-slate-500">
-                      平均成本
-                    </div>
-
-                    <div className="mt-1 font-semibold">
-                      ¥
-                      {formatNumber(
-                        currentAvgCostCny,
-                        2
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs text-slate-500">
-                      Category
-                    </div>
-
-                    <div className="mt-1 font-semibold">
-                      {getCategoryLabel(
-                        selectedHolding.category
-                      )}
-                    </div>
-                  </div>
-
-                  {selectedHolding.native_currency && (
-                    <div>
-                      <div className="text-xs text-slate-500">
-                        原币 Holding
-                      </div>
-
-                      <div className="mt-1 font-semibold">
-                        {
-                          selectedHolding.native_currency
-                        }{" "}
-                        {formatNumber(
-                          toNumber(
-                            selectedHolding.native_amount
-                          ),
-                          2
-                        )}
-                      </div>
-
-                      <div className="text-xs text-slate-500">
-                        native_cost{" "}
-                        {formatNumber(
-                          toNumber(
-                            selectedHolding.native_cost
-                          ),
-                          2
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-            {/* ================================================= */}
-            {/* NEW Category */}
-            {/* ================================================= */}
-
-            {scenario ===
-              "NEW" && (
-              <div className="mt-5">
-                <label className="mb-1 block text-sm font-medium">
-                  资产类别
-                  <span className="ml-1 text-red-500">
-                    （新买入必须手动选择）
-                  </span>
-                </label>
-
-                <select
-                  value={category}
-                  onChange={(e) =>
-                    setCategory(
-                      e.target
-                        .value as
-                        | InvestmentCategory
-                        | ""
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                >
-                  <option value="">
-                    -- 请选择 --
-                  </option>
-
-                  <option value="fixed_income">
-                    固定收益
-                  </option>
-
-                  <option value="global_stock">
-                    全球股票
-                  </option>
-
-                  <option value="china_stock">
-                    中国股票
-                  </option>
-
-                  <option value="gold">
-                    黄金
-                  </option>
-                </select>
-              </div>
-            )}
-
-            {/* ================================================= */}
-            {/* Asset */}
-            {/* ================================================= */}
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  资产代码
-                </label>
-
-                <input
-                  value={assetCode}
-                  onChange={(e) =>
-                    setAssetCode(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                  placeholder="例如 VOO / 002849"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  资产名称
-                </label>
-
-                <input
-                  value={assetName}
-                  onChange={(e) =>
-                    setAssetName(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  平台
-                </label>
-
-                <input
-                  value={platform}
-                  onChange={(e) =>
-                    setPlatform(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                  placeholder="例如 IBKR"
-                />
-              </div>
-            </div>
-
-            {/* ================================================= */}
-            {/* Date / Currency / FX */}
-            {/* ================================================= */}
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  交易日期
-                </label>
-
-                <input
-                  type="date"
-                  value={
-                    transactionDate
-                  }
-                  onChange={(e) =>
-                    setTransactionDate(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  交易币种
-                </label>
-
-                <select
-                  value={
-                    nativeCurrency
-                  }
-                  onChange={(e) =>
-                    handleCurrencyChange(
-                      e.target
-                        .value as Currency
-                    )
-                  }
-                  disabled={
-                    region === "CN"
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-slate-100"
-                >
-                  {region ===
-                  "CN" ? (
-                    <option value="CNY">
-                      CNY
-                    </option>
-                  ) : (
-                    <>
-                      <option value="USD">
-                        USD
-                      </option>
-
-                      <option value="HKD">
-                        HKD
-                      </option>
-                    </>
-                  )}
-                </select>
-              </div>
-
-              {region ===
-                "HK" && (
-                <div>
-                  <label className="mb-1 block text-sm font-medium">
-                    {nativeCurrency} 汇率
-                  </label>
-
-                  <div className="rounded-lg border bg-slate-50 px-3 py-2 text-sm font-semibold">
-                    {fxLoading
-                      ? "获取中..."
-                      : fxRate &&
-                        fxRate > 0
-                      ? `1 ${nativeCurrency} = ${formatNumber(
-                          fxRate,
-                          6
-                        )} CNY`
-                      : `暂无 ${nativeCurrency} 汇率`}
-                  </div>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    汇率方向：1{" "}
-                    {nativeCurrency} =
-                    X CNY
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* ================================================= */}
-            {/* SELL Mode */}
-            {/* ================================================= */}
-
-            {transactionType ===
-              "SELL" && (
-              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                <div className="mb-2 text-sm font-semibold">
-                  SELL 计算方式
-                </div>
-
-                <div className="flex gap-5 text-sm">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={
-                        sellMode ===
-                        "SHARES"
-                      }
-                      onChange={() =>
-                        setSellMode(
-                          "SHARES"
-                        )
-                      }
-                    />
-
-                    按 Shares 卖出
-                  </label>
-
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={
-                        sellMode ===
-                        "AMOUNT"
-                      }
-                      onChange={() =>
-                        setSellMode(
-                          "AMOUNT"
-                        )
-                      }
-                    />
-
-                    按金额卖出
-                  </label>
-                </div>
-              </div>
-            )}
-
-            {/* ================================================= */}
-            {/* Price / Shares / Fee */}
-            {/* ================================================= */}
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  {transactionType ===
-                  "BUY"
-                    ? `买入单价（${nativeCurrency}，交易记录）`
-                    : `卖出单价（${nativeCurrency}，交易记录）`}
-                </label>
-
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={
-                    tradePrice
-                  }
-                  onChange={(e) =>
-                    setTradePrice(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  Shares
-                  {writesSecurityHolding
-                    ? "（写入 Holding）"
-                    : "（交易记录）"}
-                </label>
-
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={shares}
-                  onChange={(e) =>
-                    setShares(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  手续费（
-                  {
-                    nativeCurrency
-                  }
-                  ，交易记录）
-                </label>
-
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={fee}
-                  onChange={(e) =>
-                    setFee(
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
-            </div>
-
-            {/* ================================================= */}
-            {/* Trade Amount */}
-            {/* ================================================= */}
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  交易金额（
-                  {
-                    nativeCurrency
-                  }
-                  ，交易记录）
-                </label>
-
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={tradeAmount}
-                  readOnly={
-                    transactionType === "BUY"
-                  }
-                  onChange={(e) => {
-                    if (
-                      transactionType !==
-                      "BUY"
-                    ) {
-                      setTradeAmount(
-                        e.target.value
-                      );
-                    }
-                  }}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    transactionType === "BUY"
-                      ? "bg-slate-50"
-                      : ""
-                  }`}
-                />
-
-                {transactionType ===
-                "BUY" ? (
-                  <p className="mt-1 text-xs text-slate-500">
-                    自动计算：买入单价 × Shares（不含手续费）。
-                    手续费单独记录。
-                  </p>
-                ) : (
-                  <p className="mt-1 text-xs text-slate-500">
-                    本次实际卖出所得的本币金额，仅记录交易。
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  CNY 交易金额（交易记录）
-                </label>
-
-                <div className="rounded-lg border bg-slate-50 px-3 py-2 text-sm font-semibold">
-                  ¥
-                  {formatNumber(
-                    tradeValueCny,
-                    2
-                  )}
-                </div>
-
-                <p className="mt-1 text-xs text-slate-500">
-                  {nativeCurrency ===
-                  "CNY"
-                    ? "CNY 原币金额。"
-                    : `${nativeCurrency} 金额 × ${nativeCurrency}→CNY 汇率。此字段只记录在 investment_transactions。`}
-                </p>
-              </div>
-            </div>
-
-            {/* ================================================= */}
-            {/* BUY Holding Update */}
-            {/* ================================================= */}
-
-            {transactionType ===
-              "BUY" &&
-              scenario ===
-                "HOLDING" &&
-              selectedHolding && (
-                <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50 p-4">
-                  <div className="mb-3 text-sm font-semibold text-blue-900">
-                    BUY → Holding 更新
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div>
-                      <div className="text-xs text-blue-700">
-                        Shares（写入 Holding）
-                      </div>
-
-                      <div className="mt-1 text-lg font-semibold">
-                        +
-                        {formatNumber(
-                          toNumber(
-                            shares
-                          ),
-                          2
-                        )}
-                      </div>
-
-                      <div className="text-xs text-slate-500">
-                        Holding.shares：
-                        {formatNumber(
-                          currentShares,
-                          2
-                        )}
-                        {" → "}
-                        {formatNumber(
-                          currentShares +
-                            toNumber(
-                              shares
-                            ),
-                          2
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-xs text-blue-700">
-                        CNY 成本增加（写入 Holding）
-                      </div>
-
-                      <div className="mt-1 text-lg font-semibold">
-                        +¥
-                        {formatNumber(
-                          tradeValueCny,
-                          2
-                        )}
-                      </div>
-
-                      <div className="text-xs text-slate-500">
-                        Holding.cost：¥
-                        {formatNumber(
-                          currentCostCny,
-                          2
-                        )}
-                        {" → "}
-                        ¥
-                        {formatNumber(
-                          currentCostCny +
-                            tradeValueCny,
-                          2
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-            {/* ================================================= */}
-            {/* NEW BUY */}
-            {/* ================================================= */}
-
-            {transactionType ===
-              "BUY" &&
-              scenario ===
-                "NEW" && (
-                <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50 p-4">
-                  <div className="mb-3 text-sm font-semibold text-blue-900">
-                    NEW BUY → 创建 Holding
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div>
-                      <div className="text-xs text-blue-700">
-                        Shares（写入 Holding）
-                      </div>
-
-                      <div className="mt-1 text-lg font-semibold">
-                        +
-                        {formatNumber(
-                          toNumber(
-                            shares
-                          ),
-                          8
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-xs text-blue-700">
-                        CNY 成本（写入 Holding）
-                      </div>
-
-                      <div className="mt-1 text-lg font-semibold">
-                        ¥
-                        {formatNumber(
-                          tradeValueCny,
-                          2
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-xs text-blue-700">
-                        Category（写入 Holding）
-                      </div>
-
-                      <div className="mt-1 text-lg font-semibold">
-                        {getCategoryLabel(
-                          category
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 rounded-lg border border-blue-200 bg-white p-3 text-xs text-slate-600">
-                    <div>
-                      Holding.amount = ¥
-                      {formatNumber(
-                        tradeValueCny,
-                        2
-                      )}
-                    </div>
-
-                    <div className="mt-1">
-                      Holding.cost = ¥
-                      {formatNumber(
-                        tradeValueCny,
-                        2
-                      )}
-                    </div>
-
-                    <div className="mt-1">
-                      Holding.shares ={" "}
-                      {formatNumber(
-                        toNumber(
-                          shares
-                        ),
-                        8
-                      )}
-                    </div>
-
-                    <div className="mt-1">
-                      Holding.currency = CNY
-                    </div>
-
-                    <div className="mt-1">
-                      Holding.active = true
-                    </div>
-                  </div>
-
-                  <p className="mt-3 text-xs text-slate-500">
-                    NEW BUY 会同时写入 investment_transactions，
-                    并创建新的 Security Holding。
-                  </p>
-                </div>
-              )}
-
-            {/* ================================================= */}
-            {/* SELL Holding Update */}
-            {/* ================================================= */}
-
-            {transactionType ===
-              "SELL" &&
-              scenario ===
-                "HOLDING" &&
-              selectedHolding && (
-                <div className="mt-5 space-y-4">
-                  {/* Security Holding */}
-
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-                    <div className="mb-3 text-sm font-semibold text-red-900">
-                      SELL → 证券 Holding 更新
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <div>
-                        <div className="text-xs text-red-700">
-                          Shares（写入 Holding）
-                        </div>
-
-                        <div className="mt-1 text-lg font-semibold">
-                          -
-                          {formatNumber(
-                            toNumber(
-                              shares
-                            ),
-                            8
-                          )}
-                        </div>
-
-                        <div className="text-xs text-slate-500">
-                          {formatNumber(
-                            currentShares,
-                            8
-                          )}
-                          {" → "}
-                          {formatNumber(
-                            remainingShares,
-                            8
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-xs text-red-700">
-                          卖出扣减成本（写入 Holding）
-                        </div>
-
-                        <div className="mt-1 text-lg font-semibold">
-                          -¥
-                          {formatNumber(
-                            sellCostBasisCny,
-                            2
-                          )}
-                        </div>
-
-                        <div className="text-xs text-slate-500">
-                          ¥
-                          {formatNumber(
-                            currentCostCny,
-                            2
-                          )}
-                          {" → "}
-                          ¥
-                          {formatNumber(
-                            remainingCostCny,
-                            2
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-xs text-red-700">
-                          卖出后状态
-                        </div>
-
-                        <div className="mt-1 text-lg font-semibold">
-                          {remainingShares <=
-                          0
-                            ? "active = false"
-                            : "active = true"}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-xs text-red-700">
-                          卖出后 Amount（按最近价格）
-                        </div>
-
-                        <div className="mt-1 text-lg font-semibold">
-                          ¥
-                          {formatNumber(
-                            remainingMarketValueCny,
-                            2
-                          )}
-                        </div>
-
-                        <div className="text-xs text-slate-500">
-                          最近价格：{nativeCurrency} {formatNumber(
-                            sellMarketPriceNative,
-                            4
-                          )}
-                          <br />
-                          剩余 Shares × 最近价格；
-                          Cost / fee_cost 不受市场价格影响。
-                        </div>
-                      </div>
-                    </div>
-
-                    <p className="mt-3 text-xs text-slate-500">
-                      注意：这里扣减的是历史持仓成本，
-                      不是本次卖出的成交金额。
-                    </p>
-                  </div>
-
-                  {/* Security Native */}
-
-                  {currency !==
-                    "CNY" && (
-                    <div className="rounded-lg border border-orange-200 bg-orange-50 p-4">
-                      <div className="mb-3 text-sm font-semibold text-orange-900">
-                        SELL → 证券 Holding_native_currency 更新
-                      </div>
-
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div>
-                          <div className="text-xs text-orange-700">
-                            native_amount（写入 Holding_native_currency）
-                          </div>
-
-                          <div className="mt-1 text-lg font-semibold text-orange-800">
-                            -
-                            {
-                              nativeCurrency
-                            }{" "}
-                            {formatNumber(
-                              remainingMarketValueNative,
-                              2
-                            )}
-                          </div>
-
-                          <div className="text-xs text-slate-500">
-                            原币市值按 SELL 后剩余 Shares × 最近价格重新计算。
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="text-xs text-orange-700">
-                            native_cost（写入 Holding_native_currency）
-                          </div>
-
-                          <div className="mt-1 text-lg font-semibold text-orange-800">
-                            -
-                            {
-                              nativeCurrency
-                            }{" "}
-                            {formatNumber(
-                              selectedHolding &&
-                                currentShares >
-                                  0
-                                ? toNumber(
-                                    selectedHolding.native_cost
-                                  ) *
-                                  (toNumber(
-                                    shares
-                                  ) /
-                                    currentShares)
-                                : 0,
-                              2
-                            )}
-                          </div>
-
-                          <div className="text-xs text-slate-500">
-                            原币历史成本按卖出 Shares / 卖出前 Shares 比例扣减，
-                            不按卖出成交金额扣减。
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Cash Holding */}
-
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-                    <div className="mb-3 text-sm font-semibold text-emerald-900">
-                      SELL → Cash Holding
-                    </div>
-
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium">
-                          Cash Holding Code
-                        </label>
-
-                        <input
-                          value={cashAssetCode}
-                          onChange={(e) =>
-                            setCashAssetCode(e.target.value)
-                          }
-                          className="w-full rounded-lg border bg-white px-3 py-2 text-sm"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="mb-1 text-sm font-medium">
-                          本币卖出成交金额（交易记录）
-                        </div>
-
-                        <div className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold">
-                          {nativeCurrency}{" "}
-                          {formatNumber(toNumber(tradeAmount), 2)}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 先写 Cash Holding_native_currency */}
-                    {currency !== "CNY" && (
-                      <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
-                        <div className="text-xs text-emerald-700">
-                          SELL → Cash Holding_native_currency
-                        </div>
-
-                        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                          <div>
-                            <label className="mb-1 block text-xs text-slate-500">
-                              Holding_native_currency.native_amount
-                            </label>
-
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium">
-                                {nativeCurrency}
-                              </span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={
-                                  cashNativeAmount ||
-                                  String(defaultCashNativeValuePreview)
-                                }
-                                onChange={(e) =>
-                                  setCashNativeAmount(e.target.value)
-                                }
-                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
-                              />
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-xs text-slate-500">
-                              Holding_native_currency.native_cost
-                            </label>
-
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium">
-                                {nativeCurrency}
-                              </span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={
-                                  cashNativeCost ||
-                                  String(defaultCashNativeValuePreview)
-                                }
-                                onChange={(e) =>
-                                  setCashNativeCost(e.target.value)
-                                }
-                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-2 text-xs text-slate-500">
-                          这两个原币数字可以直接修改；保存时会写入 Cash Holding_native_currency。
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Cash Holding 增加 */}
-                    <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
-                      <div className="text-xs text-emerald-700">
-                        Cash Holding 增加（写入 Holding）
-                      </div>
-
-                      <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                        <div>
-                          <label className="mb-1 block text-xs text-slate-500">
-                            Cash Holding.amount +（扣除手续费）
-                          </label>
-                          {currency === "CNY" ? (
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium">¥</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={
-                                  cashCnyAmount ||
-                                  String(defaultCashCnyValuePreview)
-                                }
-                                onChange={(e) =>
-                                  setCashCnyAmount(e.target.value)
-                                }
-                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
-                              />
-                            </div>
-                          ) : (
-                            <div className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xl font-bold text-emerald-800">
-                              +¥{formatNumber(finalCashCnyAmountPreview, 2)}
-                            </div>
-                          )}
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs text-slate-500">
-                            Cash Holding.cost +（扣除手续费）
-                          </label>
-                          {currency === "CNY" ? (
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium">¥</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={
-                                  cashCnyCost ||
-                                  String(defaultCashCnyValuePreview)
-                                }
-                                onChange={(e) =>
-                                  setCashCnyCost(e.target.value)
-                                }
-                                className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-semibold"
-                              />
-                            </div>
-                          ) : (
-                            <div className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xl font-bold text-emerald-800">
-                              +¥{formatNumber(finalCashCnyCostPreview, 2)}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {currency === "CNY" ? (
-                        <div className="mt-2 text-xs text-slate-500">
-                          CNY SELL 时，Cash Holding.amount / cost 可以直接修改；默认值为卖出成交金额扣除手续费。
-                        </div>
-                      ) : (
-                        <div className="mt-2 text-xs text-slate-500">
-                          非 CNY SELL 时，这两个 CNY 数字不可直接修改，分别由上面的 Cash Holding_native_currency.native_amount / native_cost × 汇率换算得到。
-                        </div>
-                      )}
-                    </div>
-
-                    {currency === "CNY" && (
-                      <div className="mt-4 rounded-lg border border-emerald-300 bg-white p-4">
-                        <div className="text-xs text-emerald-700">
-                          本次为 CNY Cash Holding
-                        </div>
-                        <div className="mt-1 text-sm font-semibold text-emerald-800">
-                          不写入 Holding_native_currency
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-            {/* ================================================= */}
-            {/* Remark */}
-            {/* ================================================= */}
-
-            <div className="mt-5">
-              <label className="mb-1 block text-sm font-medium">
-                备注
-                <span className="ml-1 text-xs font-normal text-slate-400">
-                  （交易记录）
-                </span>
-              </label>
-
+          </div>
+
+          {/* =================================================
+              新增单个任务
+          ================================================= */}
+
+          <div className="mt-4 flex gap-2">
+            <input
+              value={newTask}
+              onChange={(event) =>
+                setNewTask(
+                  event.target.value
+                )
+              }
+              onKeyDown={(event) => {
+                if (
+                  event.key ===
+                  "Enter"
+                ) {
+                  handleAddTask();
+                }
+              }}
+              placeholder="输入任务后回车"
+              className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-400"
+            />
+
+            <button
+              type="button"
+              onClick={
+                handleAddTask
+              }
+              disabled={
+                addingTask ||
+                !newTask.trim()
+              }
+              className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              添加
+            </button>
+          </div>
+
+          {/* =================================================
+              批量添加
+          ================================================= */}
+
+          <details className="mt-6 border-t border-gray-200 pt-4">
+            <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-900">
+              ＋ 批量添加任务
+            </summary>
+
+            <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3">
               <textarea
-                value={remark}
-                onChange={(e) =>
-                  setRemark(
-                    e.target.value
+                value={batchText}
+                onChange={(event) =>
+                  setBatchText(
+                    event.target.value
                   )
                 }
-                rows={3}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
-                placeholder="可选"
+                placeholder={
+                  "可以直接粘贴 AI 给你的任务，例如：\n1. 卖出易方达纳指\n2. 卖出日本基金\n3. 卖出摩根入息\n4. 更新香港账户现金\n5. 最后检查整体资产配置"
+                }
+                rows={7}
+                className="w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400"
               />
-            </div>
 
-            {/* ================================================= */}
-            {/* Save */}
-            {/* ================================================= */}
-
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving}
-                className="rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {saving
-                  ? "保存中..."
-                  : "保存交易"}
-              </button>
-            </div>
-          </section>
-
-          {/* ================================================= */}
-          {/* 右侧规则 */}
-          {/* ================================================= */}
-
-          <aside className="h-fit rounded-xl border bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">
-              Holding 更新规则
-            </h2>
-
-            <div className="mt-4 space-y-4 text-sm">
-              {/* BUY HOLDING */}
-
-              <div>
-                <div className="font-semibold text-blue-700">
-                  BUY · HOLDING
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div className="text-xs text-gray-400">
+                  粘贴后先确认任务，确认后才会真正加入记录。
                 </div>
 
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-600">
-                  <li>
-                    Shares ↑
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
-
-                  <li>
-                    Cost ↑
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
-
-                  <li>
-                    active = true
-                  </li>
-                </ul>
+                <button
+                  type="button"
+                  onClick={
+                    handlePreviewBatchTasks
+                  }
+                  disabled={
+                    addingTask ||
+                    !batchText.trim()
+                  }
+                  className="shrink-0 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  识别并确认
+                </button>
               </div>
+            </div>
+          </details>
 
-              {/* SELL HOLDING */}
+          {/* =================================================
+              批量任务确认区
+          ================================================= */}
 
-              <div>
-                <div className="font-semibold text-red-700">
-                  SELL · HOLDING
+          {showBatchReview && (
+            <div className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white">
+              {/* Header */}
+              <div className="border-b border-gray-200 bg-gray-50 px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">
+                      批量任务确认
+                    </h3>
+
+                    <div className="mt-1 text-xs text-gray-500">
+                      共{" "}
+                      {batchDrafts.length}
+                      {" "}
+                      个任务，其中识别出{" "}
+                      {assetDraftCount}
+                      {" "}
+                      个可能与资产有关。
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={
+                      handleCancelBatchReview
+                    }
+                    className="text-xs text-gray-400 hover:text-gray-700"
+                  >
+                    取消
+                  </button>
                 </div>
-
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-600">
-                  <li>
-                    Shares ↓
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
-
-                  <li>
-                    Cost ↓
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
-
-                  <li>
-                    USD / HKD Security 同步更新
-                    holding_native_currency.native_amount / native_cost
-                  </li>
-
-                  <li>
-                    卖出成交金额扣除手续费后进入 Cash Holding
-                  </li>
-
-                  <li>
-                    USD / HKD Cash 同步写入
-                    Holding_native_currency
-                  </li>
-
-                  <li>
-                    全部卖出 → active = false
-                  </li>
-                </ul>
               </div>
 
-              {/* NEW BUY */}
-
+              {/* Draft List */}
               <div>
-                <div className="font-semibold text-emerald-700">
-                  NEW · BUY
-                </div>
+                {batchDrafts.map(
+                  (draft, index) => (
+                    <div
+                      key={draft.id}
+                      className="border-b border-gray-100 px-4 py-4 last:border-b-0"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="pt-0.5 text-xs text-gray-400">
+                          {index + 1}
+                        </div>
 
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-600">
-                  <li>
-                    创建新的 Security Holding
-                  </li>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-gray-900">
+                            {draft.title}
+                          </div>
 
-                  <li>
-                    Shares
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
+                          {/* 资产识别 */}
+                          <div className="mt-2">
+                            {draft.assetRelated ? (
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                                    资产相关任务
+                                  </span>
 
-                  <li>
-                    CNY Cost
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      toggleBatchAssetRelated(
+                                        draft.id
+                                      )
+                                    }
+                                    className="text-xs text-gray-400 hover:text-gray-700"
+                                  >
+                                    改为普通任务
+                                  </button>
+                                </div>
 
-                  <li>
-                    Category
-                    <span className="font-medium">
-                      （写入 Holding）
-                    </span>
-                  </li>
+                                {/* 当前阶段先设置条件 */}
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs text-gray-500">
+                                    执行条件
+                                  </span>
 
-                  <li>
-                    active = true
-                  </li>
+                                  <select
+                                    value={
+                                      draft.condition ??
+                                      ""
+                                    }
+                                    onChange={(event) =>
+                                      changeBatchCondition(
+                                        draft.id,
+                                        event.target
+                                          .value ||
+                                          null
+                                      )
+                                    }
+                                    className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-700 outline-none focus:border-gray-400"
+                                  >
+                                    <option value="">
+                                      暂不设置
+                                    </option>
 
-                  <li>
-                    Category 必须手动选择
-                  </li>
-                </ul>
-              </div>
+                                    <option value="回本后卖出">
+                                      回本后卖出
+                                    </option>
 
-              {/* CASH */}
+                                    <option value="达到目标价格后处理">
+                                      达到目标价格后处理
+                                    </option>
 
-              <div>
-                <div className="font-semibold text-emerald-700">
-                  Cash Holding
-                </div>
+                                    <option value="根据当时价格决定">
+                                      根据当时价格决定
+                                    </option>
+                                  </select>
+                                </div>
 
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-600">
-                  <li>
-                    holdings.amount = CNY
-                  </li>
-
-                  <li>
-                    holdings.cost = CNY
-                  </li>
-
-                  <li>
-                    holdings.currency = CNY
-                  </li>
-
-                  <li>
-                    USD / HKD 原币余额存入
-                    holding_native_currency
-                  </li>
-
-                  <li>
-                    CNY Cash 不写 native table
-                  </li>
-                </ul>
-              </div>
-            </div>
-
-            {/* ================================================= */}
-            {/* 重要区别 */}
-            {/* ================================================= */}
-
-            <div className="mt-5 rounded-lg bg-slate-50 p-4 text-xs leading-5 text-slate-500">
-              <div className="font-semibold text-slate-700">
-                一个重要区别
-              </div>
-
-              <p className="mt-2">
-                「CNY 交易金额」
-                是 investment_transactions
-                中的成交金额记录。
-              </p>
-
-              <p className="mt-2">
-                BUY 时：
-                CNY 交易金额同时作为
-                Holding 成本增加值。
-              </p>
-
-              <p className="mt-2">
-                NEW BUY 时：
-                CNY 交易金额用于创建新的
-                Security Holding 的 amount
-                和 cost。
-              </p>
-
-              <p className="mt-2">
-                SELL 时：
-                CNY 交易金额是卖出所得，
-                进入 Cash Holding。
-              </p>
-
-              <p className="mt-2">
-                SELL 的证券 Holding
-                扣减的是历史成本
-                （cost_basis），
-                不是卖出所得。
-              </p>
-
-              <p className="mt-2">
-                USD / HKD SELL：
-                原币金额另外进入
-                holding_native_currency，
-                不改变 holdings 使用 CNY
-                的原则。
-              </p>
-            </div>
-          </aside>
-        </div>
-
-        {/* ================================================= */}
-        {/* 最近交易 */}
-        {/* ================================================= */}
-
-        <section className="mt-6 rounded-xl border bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">
-                最近投资交易
-              </h2>
-
-              <p className="mt-1 text-xs text-slate-500">
-                共{" "}
-                {
-                  transactions.length
-                }{" "}
-                笔
-              </p>
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="py-10 text-center text-sm text-slate-500">
-              加载中...
-            </div>
-          ) : transactions.length ===
-            0 ? (
-            <div className="py-10 text-center text-sm text-slate-500">
-              暂无交易记录
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs text-slate-500">
-                    <th className="px-3 py-3">
-                      日期
-                    </th>
-
-                    <th className="px-3 py-3">
-                      类型
-                    </th>
-
-                    <th className="px-3 py-3">
-                      场景
-                    </th>
-
-                    <th className="px-3 py-3">
-                      资产
-                    </th>
-
-                    <th className="px-3 py-3">
-                      Category
-                    </th>
-
-                    <th className="px-3 py-3 text-right">
-                      Shares
-                    </th>
-
-                    <th className="px-3 py-3 text-right">
-                      本币成交金额
-                    </th>
-
-                    <th className="px-3 py-3 text-right">
-                      CNY 金额
-                    </th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {transactions
-                    .slice(0, 100)
-                    .map(
-                      (
-                        transaction,
-                        index
-                      ) => {
-                        const transactionCurrency =
-                          transaction.currency ||
-                          "CNY";
-
-                        return (
-                          <tr
-                            key={
-                              transaction.id ??
-                              index
-                            }
-                            className="border-b last:border-0"
-                          >
-                            <td className="whitespace-nowrap px-3 py-3">
-                              {formatDate(
-                                transaction.transaction_date
-                              )}
-                            </td>
-
-                            <td className="px-3 py-3">
-                              <span
-                                className={
-                                  transaction.transaction_type ===
-                                  "BUY"
-                                    ? "font-semibold text-emerald-600"
-                                    : "font-semibold text-red-600"
-                                }
-                              >
-                                {
-                                  transaction.transaction_type
-                                }
-                              </span>
-                            </td>
-
-                            <td className="px-3 py-3">
-                              {
-                                transaction.scenario
-                              }
-                            </td>
-
-                            <td className="px-3 py-3">
-                              <div className="font-medium">
-                                {
-                                  transaction.asset_name
-                                }
+                                {/* 下一阶段提示 */}
+                                <div className="text-xs text-gray-400">
+                                  下一步可以关联具体 Holding，系统再自动读取成本、当前市值和盈亏判断条件是否达到。
+                                </div>
                               </div>
+                            ) : (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500">
+                                  普通任务
+                                </span>
 
-                              <div className="text-xs text-slate-500">
-                                {
-                                  transaction.asset_code
-                                }
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    toggleBatchAssetRelated(
+                                      draft.id
+                                    )
+                                  }
+                                  className="text-xs text-gray-400 hover:text-gray-700"
+                                >
+                                  设为资产相关任务
+                                </button>
                               </div>
-                            </td>
+                            )}
+                          </div>
+                        </div>
 
-                            <td className="px-3 py-3">
-                              {getCategoryLabel(
-                                transaction.category
-                              )}
-                            </td>
+                        {/* 删除草稿 */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeBatchDraft(
+                              draft.id
+                            )
+                          }
+                          className="shrink-0 rounded px-2 py-1 text-xs text-red-400 hover:bg-red-50 hover:text-red-600"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
 
-                            <td className="px-3 py-3 text-right">
-                              {formatNumber(
-                                toNumber(
-                                  transaction.shares
-                                ),
-                                8
-                              )}
-                            </td>
+              {/* Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-4 py-3">
+                <div className="text-xs text-gray-500">
+                  确认后才会真正写入任务。
+                </div>
 
-                            <td className="px-3 py-3 text-right">
-                              {
-                                transactionCurrency
-                              }{" "}
-                              {formatNumber(
-                                toNumber(
-                                  transaction.trade_amount
-                                ),
-                                2
-                              )}
-                            </td>
-
-                            <td className="px-3 py-3 text-right">
-                              ¥
-                              {formatNumber(
-                                toNumber(
-                                  transaction.trade_value_cny
-                                ),
-                                2
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      }
-                    )}
-                </tbody>
-              </table>
+                <button
+                  type="button"
+                  onClick={
+                    handleConfirmBatchAdd
+                  }
+                  disabled={
+                    addingTask ||
+                    batchDrafts.length ===
+                      0
+                  }
+                  className="rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {addingTask
+                    ? "添加中..."
+                    : `确认添加 ${batchDrafts.length} 个任务`}
+                </button>
+              </div>
             </div>
           )}
         </section>
-      </main>
-    </div>
+
+        {/* =================================================
+            附件
+        ================================================= */}
+
+        <section className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <details>
+            <summary className="cursor-pointer px-5 py-4 text-sm font-semibold text-gray-900">
+              📎 附件
+
+              {files.length > 0 && (
+                <span className="ml-2 text-xs font-normal text-gray-400">
+                  {files.length} 个
+                </span>
+              )}
+            </summary>
+
+            <div className="border-t border-gray-100 px-5 py-4">
+              {files.length > 0 && (
+                <div className="space-y-2">
+                  {files.map(
+                    (file) => (
+                      <div
+                        key={
+                          file.id
+                        }
+                        className="flex items-center gap-3 rounded-lg border border-gray-100 px-3 py-2"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleOpenFile(
+                              file
+                            )
+                          }
+                          className="min-w-0 flex-1 truncate text-left text-sm text-gray-700 hover:text-gray-900 hover:underline"
+                        >
+                          {
+                            file.file_name
+                          }
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDeleteFile(
+                              file
+                            )
+                          }
+                          className="shrink-0 rounded px-2 py-1 text-xs text-red-400 hover:bg-red-50 hover:text-red-600"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+
+              <label className="mt-4 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+                {uploading
+                  ? "上传中..."
+                  : "添加文件"}
+
+                <input
+                  type="file"
+                  className="hidden"
+                  onChange={
+                    handleUploadFile
+                  }
+                  disabled={
+                    uploading
+                  }
+                />
+              </label>
+            </div>
+          </details>
+        </section>
+      </div>
+    </main>
   );
 }
+
