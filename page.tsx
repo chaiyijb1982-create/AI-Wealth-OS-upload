@@ -1,10 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  useRouter,
-  usePathname,
-} from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import {
   DndContext,
@@ -14,24 +11,20 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-
 import {
   SortableContext,
   useSortable,
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-
 import { CSS } from "@dnd-kit/utilities";
 
-import {
-  EditorContent,
-  useEditor,
-} from "@tiptap/react";
-
+import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Color from "@tiptap/extension-color";
 import { TextStyle } from "@tiptap/extension-text-style";
+
+import { getHoldings, type Holding } from "@/lib/asset";
 
 // =====================================================
 // 类型
@@ -51,10 +44,8 @@ type RecordTask = {
   id: string;
   record_id: string;
   title: string;
-
   condition: string | null;
   holding_id: number | null;
-
   completed: boolean;
   completed_at: string | null;
   sort_order: number;
@@ -70,41 +61,23 @@ type RecordFile = {
   created_at: string;
 };
 
-type TaskProgress = {
-  completed: number;
-  total: number;
-};
-
-// =====================================================
-// 批量任务草稿
-// =====================================================
-
 type BatchTaskDraft = {
   id: string;
   title: string;
-
-  // 是否可能是资产相关任务
   assetRelated: boolean;
-
-  // 后续步骤再填写
   condition: string | null;
   holdingId: number | null;
 };
 
 // =====================================================
-// 工具函数
+// 工具
 // =====================================================
 
 function formatDateTime(value: string | null) {
   if (!value) return "—";
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "—";
-  }
-
-  return date.toLocaleString("zh-CN", {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("zh-CN", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -114,74 +87,290 @@ function formatDateTime(value: string | null) {
   });
 }
 
-/**
- * 去除批量粘贴任务前面的常见编号。
- *
- * 支持：
- *
- * 1. 卖出日本基金
- * 2、卖出摩根入息
- * - 更新现金
- * • 检查配置
- * ☐ 卖出 VOO
- * ✓ 检查资产
- */
+function formatMoney(value: unknown, currency = "CNY") {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return `${currency === "CNY" ? "¥" : currency + " "}${n.toLocaleString(
+    "zh-CN",
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+  )}`;
+}
+
 function cleanBatchTaskTitle(value: string) {
   return value
     .trim()
-    .replace(
-      /^(?:\d+[\.\、\)]\s*|[-•·]\s*|[☐☑✓✔]\s*)/,
-      ""
-    )
+    .replace(/^(?:\d+[\.\、\)]\s*|[-•·]\s*|[☐☑✓✔]\s*)/, "")
     .trim();
 }
 
-/**
- * 判断任务是否可能属于资产操作。
- *
- * 注意：
- *
- * 这里只做“识别”，
- * 不直接认为它一定需要 Holding。
- *
- * 后面用户确认以后，
- * 才会关联 Holding。
- */
 function isLikelyAssetTask(title: string) {
   const text = title.toLowerCase();
+  return [
+    "卖出", "买入", "加仓", "减仓", "清仓", "增持", "减持",
+    "持有", "调仓", "调整仓位", "归拢", "换仓", "转换", "赎回",
+    "处理", "基金", "股票", "etf", "voo", "schd", "qqqm", "gldm",
+    "黄金", "纳指", "标普", "恒生", "现金", "资产", "holding",
+  ].some((x) => text.includes(x.toLowerCase()));
+}
 
-  const assetKeywords = [
-    "卖出",
-    "买入",
-    "加仓",
-    "减仓",
-    "清仓",
-    "增持",
-    "减持",
-    "持有",
-    "调仓",
-    "调整仓位",
-    "归拢",
-    "换仓",
-    "基金",
-    "股票",
-    "etf",
-    "voo",
-    "schd",
-    "qqqm",
-    "gldm",
-    "黄金",
-    "纳指",
-    "标普",
-    "标普500",
-    "恒生",
-    "现金",
-    "资产",
-    "holding",
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[\s_\-—–/\\()[\]{}（）【】]/g, "")
+    .replace(/[：:，,。.！!？?]/g, "");
+}
+
+const ACTION_WORDS = [
+  "卖出", "买入", "加仓", "减仓", "清仓", "增持", "减持",
+  "持有", "调仓", "调整仓位", "归拢", "换仓", "转换", "赎回",
+  "出售", "处理",
+];
+
+function stripActionWords(value: string) {
+  let text = normalizeText(value);
+  for (const word of ACTION_WORDS) {
+    text = text.split(normalizeText(word)).join("");
+  }
+  return text;
+}
+
+function holdingField(h: Holding, key: string): unknown {
+  return (h as unknown as Record<string, unknown>)[key];
+}
+
+function holdingName(h: Holding) {
+  return String(
+    holdingField(h, "name") ??
+      holdingField(h, "asset_name") ??
+      holdingField(h, "title") ??
+      ""
+  );
+}
+
+function holdingCode(h: Holding) {
+  return String(
+    holdingField(h, "code") ??
+      holdingField(h, "symbol") ??
+      holdingField(h, "ticker") ??
+      ""
+  );
+}
+
+function holdingCurrency(h: Holding) {
+  return String(
+    holdingField(h, "currency") ??
+      holdingField(h, "native_currency") ??
+      "CNY"
+  );
+}
+
+function holdingAmount(h: Holding) {
+  return Number(
+    holdingField(h, "amount") ??
+      holdingField(h, "market_value") ??
+      holdingField(h, "current_value") ??
+      0
+  );
+}
+
+function holdingCost(h: Holding) {
+  return Number(
+    holdingField(h, "cost") ??
+      holdingField(h, "cost_amount") ??
+      holdingField(h, "total_cost") ??
+      0
+  );
+}
+
+function scoreHolding(taskTitle: string, h: Holding) {
+  const task = normalizeText(taskTitle);
+  const stripped = stripActionWords(taskTitle);
+  const name = normalizeText(holdingName(h));
+  const code = normalizeText(holdingCode(h));
+
+  if (!stripped) return 0;
+
+  if (code && task.includes(code)) return 1000 + code.length;
+  if (name && task.includes(name)) return 900 + name.length;
+  if (name && stripped.includes(name)) return 850 + name.length;
+  if (code && stripped.includes(code)) return 800 + code.length;
+
+  let score = 0;
+  const candidates = [name, code].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (stripped.includes(candidate)) score += 100;
+    if (candidate.includes(stripped)) score += 80;
+  }
+
+  // 中文按连续片段匹配，避免“日本基金”完全匹配不到
+  const tokens = stripped.match(/[a-z0-9]+|[\u4e00-\u9fff]/g) ?? [];
+  for (const token of tokens) {
+    if (token.length >= 2 && name.includes(token)) score += token.length * 8;
+    if (token.length >= 2 && code.includes(token)) score += token.length * 10;
+  }
+
+  // 常见名称关键词
+  const commonPairs = [
+    ["日本", "日本"],
+    ["摩根", "摩根"],
+    ["入息", "入息"],
+    ["富兰克林", "富兰克林"],
+    ["纳指", "纳指"],
+    ["qqq", "qqq"],
+    ["tsm", "tsm"],
+    ["voo", "voo"],
+    ["schd", "schd"],
+    ["gldm", "gldm"],
+    ["黄金", "黄金"],
   ];
+  for (const [a, b] of commonPairs) {
+    if (stripped.includes(a) && (name.includes(b) || code.includes(b))) score += 60;
+  }
 
-  return assetKeywords.some((keyword) =>
-    text.includes(keyword.toLowerCase())
+  return score;
+}
+
+function findMatchingHolding(taskTitle: string, holdings: Holding[]) {
+  if (!holdings.length) return null;
+
+  const ranked = holdings
+    .map((h) => ({ h, score: scoreHolding(taskTitle, h) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) return null;
+
+  // 只有明显唯一匹配时才自动选，避免误绑
+  if (ranked[0].score >= 100 || ranked.length === 1) {
+    return ranked[0].h;
+  }
+
+  if (
+    ranked[0].score >= 40 &&
+    ranked[0].score >= ranked[1].score + 15
+  ) {
+    return ranked[0].h;
+  }
+
+  return null;
+}
+
+function getDecision(task: RecordTask, h: Holding | null) {
+  if (!h) return null;
+
+  const amount = holdingAmount(h);
+  const cost = holdingCost(h);
+  if (!Number.isFinite(cost) || cost <= 0) {
+    return { text: "⚪ 暂无有效 COST，无法判断", tone: "gray" };
+  }
+
+  const diff = amount - cost;
+  const explicitSell = /卖出|出售|减仓|减持|清仓|赎回/.test(task.title);
+
+  if (/目标价格|目标价/.test(task.condition ?? "")) {
+    return { text: "🟡 需要目标价格后判断", tone: "yellow" };
+  }
+
+  if (/目标配置|达到目标配置/.test(task.condition ?? "")) {
+    return { text: "🟡 需要目标配置数据后判断", tone: "yellow" };
+  }
+
+  if (/回本/.test(task.condition ?? "") || explicitSell) {
+    return diff >= 0
+      ? { text: "🟢 已达到回本条件，建议执行", tone: "green" }
+      : { text: "🟡 尚未达到回本条件，继续等待", tone: "yellow" };
+  }
+
+  if (/根据当时价格|价格决定/.test(task.condition ?? "") || /处理/.test(task.title)) {
+    return diff >= 0
+      ? { text: "🟢 已回本，建议重新评估是否执行", tone: "green" }
+      : { text: "🟡 当前仍低于 COST，暂不建议卖出", tone: "yellow" };
+  }
+
+  return null;
+}
+
+// =====================================================
+// Holding Card
+// =====================================================
+
+function HoldingInfo({
+  task,
+  holding,
+}: {
+  task: RecordTask;
+  holding: Holding;
+}) {
+  const amount = holdingAmount(holding);
+  const cost = holdingCost(holding);
+  const diff = amount - cost;
+  const rate = cost > 0 ? (diff / cost) * 100 : null;
+  const currency = holdingCurrency(holding);
+  const decision = getDecision(task, holding);
+
+  return (
+    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+      <div className="font-medium text-gray-800">
+        Holding：{holdingName(holding) || "未命名资产"}
+      </div>
+
+      {holdingCode(holding) && (
+        <div className="mt-1 text-xs text-gray-500">
+          {holdingCode(holding)}
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+        <div>
+          <div className="text-gray-400">当前值</div>
+          <div className="mt-1 font-medium text-gray-800">
+            {formatMoney(amount, currency)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-400">COST</div>
+          <div className="mt-1 font-medium text-gray-800">
+            {formatMoney(cost, currency)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-400">盈亏</div>
+          <div
+            className={`mt-1 font-medium ${
+              diff >= 0 ? "text-green-600" : "text-red-500"
+            }`}
+          >
+            {diff >= 0 ? "+" : ""}
+            {formatMoney(diff, currency)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-400">收益率</div>
+          <div
+            className={`mt-1 font-medium ${
+              (rate ?? 0) >= 0 ? "text-green-600" : "text-red-500"
+            }`}
+          >
+            {rate === null ? "—" : `${rate >= 0 ? "+" : ""}${rate.toFixed(2)}%`}
+          </div>
+        </div>
+      </div>
+
+      {decision && (
+        <div
+          className={`mt-3 text-xs ${
+            decision.tone === "green"
+              ? "text-green-600"
+              : decision.tone === "yellow"
+              ? "text-amber-600"
+              : "text-gray-500"
+          }`}
+        >
+          {decision.text}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -189,17 +378,19 @@ function isLikelyAssetTask(title: string) {
 // Sortable Task
 // =====================================================
 
-type SortableTaskRowProps = {
-  task: RecordTask;
-  onToggle: (task: RecordTask) => void;
-  onDelete: (task: RecordTask) => void;
-};
-
 function SortableTaskRow({
   task,
+  holdings,
   onToggle,
   onDelete,
-}: SortableTaskRowProps) {
+  onSelectHolding,
+}: {
+  task: RecordTask;
+  holdings: Holding[];
+  onToggle: (task: RecordTask) => void;
+  onDelete: (task: RecordTask) => void;
+  onSelectHolding: (task: RecordTask, holdingId: number | null) => void;
+}) {
   const {
     attributes,
     listeners,
@@ -207,14 +398,18 @@ function SortableTaskRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({
-    id: task.id,
-  });
+  } = useSortable({ id: task.id });
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
   };
+
+  const selected = task.holding_id !== null
+    ? holdings.find(
+        (h) => Number(holdingField(h, "id")) === Number(task.holding_id)
+      ) ?? null
+    : null;
 
   return (
     <div
@@ -222,32 +417,27 @@ function SortableTaskRow({
       style={style}
       className={[
         "border-b border-gray-100 px-4 py-3 last:border-b-0",
-        isDragging
-          ? "relative z-10 bg-gray-50 shadow-sm"
-          : "bg-white",
+        isDragging ? "relative z-10 bg-gray-50 shadow-sm" : "bg-white",
       ].join(" ")}
     >
-      <div className="flex items-center gap-3">
-        {/* 拖动 */}
+      <div className="flex items-start gap-3">
         <button
           type="button"
           aria-label="拖动任务"
-          className="cursor-grab select-none text-gray-300 hover:text-gray-500 active:cursor-grabbing"
+          className="mt-1 cursor-grab select-none text-gray-300 hover:text-gray-500 active:cursor-grabbing"
           {...attributes}
           {...listeners}
         >
           ⋮⋮
         </button>
 
-        {/* Checkbox */}
         <input
           type="checkbox"
           checked={task.completed}
           onChange={() => onToggle(task)}
-          className="h-4 w-4 cursor-pointer rounded border-gray-300"
+          className="mt-1 h-4 w-4 cursor-pointer rounded border-gray-300"
         />
 
-        {/* 任务 */}
         <div className="min-w-0 flex-1">
           <div
             className={
@@ -259,33 +449,60 @@ function SortableTaskRow({
             {task.title}
           </div>
 
-          {/* 条件 */}
           {task.condition && (
             <div className="mt-1 text-xs text-gray-500">
               条件：{task.condition}
             </div>
           )}
 
-          {/* Holding */}
-          {task.holding_id !== null && (
-            <div className="mt-1 text-xs text-gray-400">
-              已关联资产
+          {/* 没有 Holding 时，必须允许用户自己选择 */}
+          <div className="mt-3">
+            <div className="mb-1 text-xs font-medium text-gray-500">
+              Holding
+              {selected ? (
+                <span className="ml-2 font-normal text-green-600">
+                  已自动/手动关联
+                </span>
+              ) : (
+                <span className="ml-2 font-normal text-amber-600">
+                  自动匹配不到时请选择
+                </span>
+              )}
+            </div>
+
+            <select
+              value={task.holding_id === null ? "" : String(task.holding_id)}
+              onChange={(e) =>
+                onSelectHolding(
+                  task,
+                  e.target.value ? Number(e.target.value) : null
+                )
+              }
+              className="w-full max-w-xl rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-gray-500"
+            >
+              <option value="">请选择 Holding</option>
+              {holdings.map((h) => {
+                const id = Number(holdingField(h, "id"));
+                if (!Number.isFinite(id)) return null;
+                return (
+                  <option key={id} value={id}>
+                    {holdingName(h) || "未命名资产"}
+                    {holdingCode(h) ? ` · ${holdingCode(h)}` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          {selected && <HoldingInfo task={task} holding={selected} />}
+
+          {task.completed && task.completed_at && (
+            <div className="mt-2 text-xs text-gray-400">
+              完成于 {formatDateTime(task.completed_at)}
             </div>
           )}
-
-          {/* 完成时间 */}
-          {task.completed &&
-            task.completed_at && (
-              <div className="mt-1 text-xs text-gray-400">
-                完成于{" "}
-                {formatDateTime(
-                  task.completed_at
-                )}
-              </div>
-            )}
         </div>
 
-        {/* 删除任务 */}
         <button
           type="button"
           onClick={() => onDelete(task)}
@@ -306,488 +523,265 @@ export default function RecordDetailPage() {
   const router = useRouter();
   const pathname = usePathname();
 
-  // ===================================================
-  // 关键修复
-  //
-  // 当前页面：
-  //
-  // /record/63da615e-9111-465e-ae55-9424e22dcbfd
-  //
-  // 从 pathname 最后一段直接取得 recordId。
-  //
-  // 不再依赖 useParams()，
-  // 避免出现：
-  //
-  // /api/record/undefined
-  // ===================================================
-
   const recordId = useMemo(() => {
-    const parts = pathname
-      .split("/")
-      .filter(Boolean);
-
-    if (parts.length < 2) {
-      return "";
-    }
-
-    return parts[parts.length - 1] ?? "";
+    const parts = pathname.split("/").filter(Boolean);
+    return parts.length >= 2 ? parts[parts.length - 1] ?? "" : "";
   }, [pathname]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 5,
-      },
+      activationConstraint: { distance: 5 },
     })
   );
 
-  const [record, setRecord] =
-    useState<RecordItem | null>(null);
+  const [record, setRecord] = useState<RecordItem | null>(null);
+  const [tasks, setTasks] = useState<RecordTask[]>([]);
+  const [files, setFiles] = useState<RecordFile[]>([]);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
-  const [tasks, setTasks] =
-    useState<RecordTask[]>([]);
+  const [title, setTitle] = useState("");
+  const [newTask, setNewTask] = useState("");
+  const [batchText, setBatchText] = useState("");
+  const [batchDrafts, setBatchDrafts] = useState<BatchTaskDraft[]>([]);
+  const [showBatchReview, setShowBatchReview] = useState(false);
 
-  const [progress, setProgress] =
-    useState<TaskProgress>({
-      completed: 0,
-      total: 0,
-    });
-
-  const [files, setFiles] =
-    useState<RecordFile[]>([]);
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [savingTitle, setSavingTitle] =
-    useState(false);
-
-  const [savingContent, setSavingContent] =
-    useState(false);
-
-  const [newTask, setNewTask] =
-    useState("");
-
-  const [batchText, setBatchText] =
-    useState("");
-
-  const [batchDrafts, setBatchDrafts] =
-    useState<BatchTaskDraft[]>([]);
-
-  const [showBatchReview, setShowBatchReview] =
-    useState(false);
-
-  const [addingTask, setAddingTask] =
-    useState(false);
-
-  const [uploading, setUploading] =
-    useState(false);
-
-  const [error, setError] =
-    useState("");
-
-  const [title, setTitle] =
-    useState("");
-
-  // ===================================================
-  // Editor
-  // ===================================================
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [savingContent, setSavingContent] = useState(false);
+  const [addingTask, setAddingTask] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   const editor = useEditor({
     extensions: [
       StarterKit,
       TextStyle,
-      Color.configure({
-        types: ["textStyle"],
-      }),
+      Color.configure({ types: ["textStyle"] }),
     ],
-
     content: {
       type: "doc",
-      content: [
-        {
-          type: "paragraph",
-        },
-      ],
+      content: [{ type: "paragraph" }],
     },
-
     editorProps: {
       attributes: {
-        class:
-          "min-h-[320px] px-5 py-5 outline-none",
+        class: "min-h-[320px] px-5 py-5 outline-none",
       },
     },
-
     immediatelyRender: false,
   });
 
-  // ===================================================
-  // Load Record
-  // ===================================================
-
   async function loadRecord() {
     if (!recordId) return;
-
-    try {
-      setLoading(true);
-      setError("");
-
-      const response = await fetch(
-        `/api/record/${recordId}`,
-        {
-          cache: "no-store",
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error || "获取记录失败"
-        );
-      }
-
-      setRecord(data?.record ?? null);
-      setTitle(data?.record?.title ?? "");
-
-      if (
-        editor &&
-        data?.record?.content
-      ) {
-        editor.commands.setContent(
-          data.record.content
-        );
-      }
-    } catch (error) {
-      console.error(
-        "获取记录失败:",
-        error
-      );
-
-      setError(
-        error instanceof Error
-          ? error.message
-          : "获取记录失败"
-      );
-    } finally {
-      setLoading(false);
-    }
+    const response = await fetch(`/api/record/${recordId}`, {
+      cache: "no-store",
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || "获取记录失败");
+    setRecord(data?.record ?? null);
+    setTitle(data?.record?.title ?? "");
   }
-
-  // ===================================================
-  // Load Tasks
-  // ===================================================
 
   async function loadTasks() {
     if (!recordId) return;
+    const response = await fetch(`/api/record/${recordId}/tasks`, {
+      cache: "no-store",
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || "获取任务失败");
 
-    try {
-      const response = await fetch(
-        `/api/record/${recordId}/tasks`,
-        {
-          cache: "no-store",
+    const loadedTasks: RecordTask[] = Array.isArray(data?.tasks)
+      ? data.tasks
+      : [];
+
+    // 已经人工选择过的 holding_id 永远优先，不重新猜。
+    // 只有 holding_id 为空时，才尝试自动匹配。
+    if (holdings.length > 0) {
+      let changed = false;
+      const nextTasks = [...loadedTasks];
+
+      for (let i = 0; i < nextTasks.length; i++) {
+        const task = nextTasks[i];
+        if (task.holding_id !== null) continue;
+
+        const matched = findMatchingHolding(task.title, holdings);
+        if (!matched) continue;
+
+        const matchedId = Number(holdingField(matched, "id"));
+        if (!Number.isFinite(matchedId)) continue;
+
+        try {
+          const saveResponse = await fetch(
+            `/api/record/${recordId}/tasks`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                taskId: task.id,
+                holding_id: matchedId,
+              }),
+            }
+          );
+
+          if (saveResponse.ok) {
+            nextTasks[i] = {
+              ...task,
+              holding_id: matchedId,
+            };
+            changed = true;
+          }
+        } catch {
+          // 自动匹配保存失败时，不影响页面。
+          // 该任务仍然会显示手动选择框。
         }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error || "获取任务失败"
-        );
       }
 
-      setTasks(
-        Array.isArray(data?.tasks)
-          ? data.tasks
-          : []
-      );
-
-      setProgress(
-        data?.progress ?? {
-          completed: 0,
-          total: 0,
-        }
-      );
-    } catch (error) {
-      console.error(
-        "获取任务失败:",
-        error
-      );
-
-      setError(
-        error instanceof Error
-          ? error.message
-          : "获取任务失败"
-      );
+      setTasks(nextTasks);
+      return;
     }
-  }
 
-  // ===================================================
-  // Load Files
-  // ===================================================
+    setTasks(loadedTasks);
+  }
 
   async function loadFiles() {
     if (!recordId) return;
+    const response = await fetch(`/api/record/${recordId}/files`, {
+      cache: "no-store",
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || "获取附件失败");
+    setFiles(Array.isArray(data?.files) ? data.files : []);
+  }
 
+  async function loadHoldings() {
     try {
-      const response = await fetch(
-        `/api/record/${recordId}/files`,
-        {
-          cache: "no-store",
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error || "获取附件失败"
-        );
-      }
-
-      setFiles(
-        Array.isArray(data?.files)
-          ? data.files
-          : []
-      );
-    } catch (error) {
-      console.error(
-        "获取附件失败:",
-        error
-      );
-
-      setError(
-        error instanceof Error
-          ? error.message
-          : "获取附件失败"
-      );
+      const result = await getHoldings();
+      setHoldings(Array.isArray(result) ? result : []);
+    } catch (e) {
+      console.error("获取 Holding 失败:", e);
+      setHoldings([]);
     }
   }
 
-  // ===================================================
-  // Initial Load
-  // ===================================================
-
   useEffect(() => {
     if (!recordId) return;
 
-    loadRecord();
-    loadTasks();
-    loadFiles();
+    let cancelled = false;
+
+    async function init() {
+      try {
+        setLoading(true);
+        setError("");
+        await Promise.all([
+          loadRecord(),
+          loadFiles(),
+          loadHoldings(),
+        ]);
+
+        // Holding 加载完成后再加载任务，
+        // 这样历史上没有 holding_id 的任务也能自动匹配。
+        await loadTasks();
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "加载记录失败");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    init();
+
+    return () => {
+      cancelled = true;
+    };
   }, [recordId]);
 
-  // ===================================================
-  // Editor Sync
-  // ===================================================
-
   useEffect(() => {
-    if (!editor || !record) return;
-
-    editor.commands.setContent(
-      record.content
-    );
-  }, [editor, record]);
-
-  // ===================================================
-  // Save Title
-  // ===================================================
+    if (!editor || !record?.content) return;
+    editor.commands.setContent(record.content);
+  }, [editor, record?.id]);
 
   async function saveTitle() {
-    if (!recordId) return;
-
     const value = title.trim();
-
-    if (!value) {
+    if (!recordId || !value) {
       alert("记录名称不能为空");
       return;
     }
 
     try {
       setSavingTitle(true);
-
-      const response = await fetch(
-        `/api/record/${recordId}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            title: value,
-          }),
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "保存标题失败"
-        );
-      }
-
-      setRecord(
-        data?.record ?? null
-      );
-
-      setTitle(
-        data?.record?.title ??
-          value
-      );
-    } catch (error) {
-      console.error(
-        "保存标题失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "保存标题失败"
-      );
+      const response = await fetch(`/api/record/${recordId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: value }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "保存标题失败");
+      setRecord(data?.record ?? null);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存标题失败");
     } finally {
       setSavingTitle(false);
     }
   }
-
-  // ===================================================
-  // Save Content
-  // ===================================================
 
   async function saveContent() {
     if (!recordId || !editor) return;
 
     try {
       setSavingContent(true);
-
-      const content =
-        editor.getJSON();
-
-      const response = await fetch(
-        `/api/record/${recordId}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            content,
-          }),
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "保存内容失败"
-        );
-      }
-
-      setRecord(
-        data?.record ?? null
-      );
-    } catch (error) {
-      console.error(
-        "保存内容失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "保存内容失败"
-      );
+      const response = await fetch(`/api/record/${recordId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editor.getJSON() }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "保存内容失败");
+      setRecord(data?.record ?? null);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存内容失败");
     } finally {
       setSavingContent(false);
     }
   }
-
-  // ===================================================
-  // Create One Task
-  // ===================================================
 
   async function createTask(
     taskTitle: string,
     condition: string | null = null,
     holdingId: number | null = null
   ) {
-    const value =
-      taskTitle.trim();
+    if (!recordId || !taskTitle.trim()) return;
 
-    if (!value || !recordId) {
-      return;
-    }
+    const response = await fetch(`/api/record/${recordId}/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: taskTitle.trim(),
+        condition,
+        holding_id: holdingId,
+      }),
+    });
 
-    const response = await fetch(
-      `/api/record/${recordId}/tasks`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          title: value,
-          condition,
-          holding_id: holdingId,
-        }),
-      }
-    );
-
-    const data =
-      await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error ||
-          "新增任务失败"
-      );
-    }
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || "新增任务失败");
   }
-
-  // ===================================================
-  // Add One Task
-  // ===================================================
 
   async function handleAddTask() {
     if (!newTask.trim()) return;
 
     try {
       setAddingTask(true);
-
-      await createTask(newTask);
-
+      const auto = findMatchingHolding(newTask, holdings);
+      await createTask(newTask, null, auto ? Number(holdingField(auto, "id")) : null);
       setNewTask("");
-
       await loadTasks();
       await loadRecord();
-    } catch (error) {
-      console.error(
-        "新增任务失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "新增任务失败"
-      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "新增任务失败");
     } finally {
       setAddingTask(false);
     }
   }
-
-  // ===================================================
-  // Parse Batch Tasks
-  // ===================================================
 
   function buildBatchDrafts() {
     const lines = batchText
@@ -795,1236 +789,602 @@ export default function RecordDetailPage() {
       .map(cleanBatchTaskTitle)
       .filter(Boolean);
 
-    const uniqueLines: string[] = [];
+    const unique = [...new Set(lines)];
 
-    for (const line of lines) {
-      if (
-        !uniqueLines.includes(line)
-      ) {
-        uniqueLines.push(line);
-      }
-    }
-
-    return uniqueLines.map(
-      (taskTitle, index) => ({
+    return unique.map((taskTitle, index) => {
+      const auto = findMatchingHolding(taskTitle, holdings);
+      return {
         id: `batch-${Date.now()}-${index}`,
         title: taskTitle,
-        assetRelated:
-          isLikelyAssetTask(
-            taskTitle
-          ),
+        assetRelated: isLikelyAssetTask(taskTitle),
         condition: null,
-        holdingId: null,
-      })
-    );
+        holdingId: auto ? Number(holdingField(auto, "id")) : null,
+      };
+    });
   }
 
-  // ===================================================
-  // Preview Batch
-  // ===================================================
-
   function handlePreviewBatchTasks() {
-    if (!batchText.trim()) {
-      return;
-    }
-
-    const drafts =
-      buildBatchDrafts();
-
-    if (!drafts.length) {
-      return;
-    }
-
+    if (!batchText.trim()) return;
+    const drafts = buildBatchDrafts();
+    if (!drafts.length) return;
     setBatchDrafts(drafts);
     setShowBatchReview(true);
   }
 
-  // ===================================================
-  // Toggle Batch Asset Recognition
-  // ===================================================
-
-  function toggleBatchAssetRelated(
-    id: string
-  ) {
-    setBatchDrafts(
-      (current) =>
-        current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                assetRelated:
-                  !item.assetRelated,
-              }
-            : item
-        )
-    );
-  }
-
-  // ===================================================
-  // Change Batch Condition
-  // ===================================================
-
-  function changeBatchCondition(
-    id: string,
-    condition: string | null
-  ) {
-    setBatchDrafts(
-      (current) =>
-        current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                condition,
-              }
-            : item
-        )
-    );
-  }
-
-  // ===================================================
-  // Remove Batch Draft
-  // ===================================================
-
-  function removeBatchDraft(
-    id: string
-  ) {
-    setBatchDrafts(
-      (current) =>
-        current.filter(
-          (item) =>
-            item.id !== id
-        )
-    );
-  }
-
-  // ===================================================
-  // Confirm Batch Add
-  // ===================================================
-
   async function handleConfirmBatchAdd() {
-    if (
-      !recordId ||
-      !batchDrafts.length
-    ) {
-      return;
-    }
+    if (!recordId || !batchDrafts.length) return;
 
     try {
       setAddingTask(true);
 
       for (const draft of batchDrafts) {
-        await createTask(
-          draft.title,
-          draft.condition,
-          draft.holdingId
-        );
+        await createTask(draft.title, draft.condition, draft.holdingId);
       }
 
       setBatchText("");
       setBatchDrafts([]);
       setShowBatchReview(false);
-
       await loadTasks();
       await loadRecord();
-    } catch (error) {
-      console.error(
-        "确认批量新增任务失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "批量新增任务失败"
-      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "批量新增任务失败");
     } finally {
       setAddingTask(false);
     }
   }
 
-  // ===================================================
-  // Cancel Batch Review
-  // ===================================================
-
-  function handleCancelBatchReview() {
-    setShowBatchReview(false);
+  async function handleToggleTask(task: RecordTask) {
+    try {
+      const response = await fetch(`/api/record/${recordId}/tasks`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: task.id,
+          completed: !task.completed,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "更新任务失败");
+      await loadTasks();
+      await loadRecord();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "更新任务失败");
+    }
   }
 
-  // ===================================================
-  // Toggle Task
-  // ===================================================
-
-  async function handleToggleTask(
-    task: RecordTask
+  async function handleSelectHolding(
+    task: RecordTask,
+    holdingId: number | null
   ) {
     try {
-      const response = await fetch(
-        `/api/record/${recordId}/tasks`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            taskId: task.id,
-            completed:
-              !task.completed,
-          }),
-        }
-      );
+      // 关键：这里只修改 record_tasks.holding_id，
+      // 不会修改真实 Holding、份额、成本或交易。
+      const response = await fetch(`/api/record/${recordId}/tasks`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: task.id,
+          holding_id: holdingId,
+        }),
+      });
 
-      const data =
-        await response.json();
-
+      const data = await response.json();
       if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "更新任务失败"
-        );
+        throw new Error(data?.error || "保存 Holding 失败");
       }
 
       await loadTasks();
       await loadRecord();
-    } catch (error) {
-      console.error(
-        "更新任务失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "更新任务失败"
-      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存 Holding 失败");
     }
   }
 
-  // ===================================================
-  // Delete Task
-  // ===================================================
-
-  async function handleDeleteTask(
-    task: RecordTask
-  ) {
-    const confirmed =
-      window.confirm(
-        `确定删除任务「${task.title}」吗？`
-      );
-
-    if (!confirmed) return;
+  async function handleDeleteTask(task: RecordTask) {
+    if (!window.confirm(`确定删除任务「${task.title}」吗？`)) return;
 
     try {
-      const response = await fetch(
-        `/api/record/${recordId}/tasks`,
-        {
-          method: "DELETE",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            taskId: task.id,
-          }),
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "删除任务失败"
-        );
-      }
-
+      const response = await fetch(`/api/record/${recordId}/tasks`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: task.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "删除任务失败");
       await loadTasks();
       await loadRecord();
-    } catch (error) {
-      console.error(
-        "删除任务失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "删除任务失败"
-      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "删除任务失败");
     }
   }
 
-  // ===================================================
-  // Drag
-  // ===================================================
-
-  async function handleDragEnd(
-    event: DragEndEvent
-  ) {
+  async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
+    if (!over || active.id === over.id) return;
 
-    if (
-      !over ||
-      active.id === over.id
-    ) {
-      return;
-    }
+    const oldIndex = tasks.findIndex((x) => x.id === active.id);
+    const newIndex = tasks.findIndex((x) => x.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
 
-    const oldIndex =
-      tasks.findIndex(
-        (task) =>
-          task.id === active.id
-      );
+    const next = arrayMove(tasks, oldIndex, newIndex).map((task, index) => ({
+      ...task,
+      sort_order: index,
+    }));
 
-    const newIndex =
-      tasks.findIndex(
-        (task) =>
-          task.id === over.id
-      );
-
-    if (
-      oldIndex < 0 ||
-      newIndex < 0
-    ) {
-      return;
-    }
-
-    const nextTasks =
-      arrayMove(
-        tasks,
-        oldIndex,
-        newIndex
-      );
-
-    setTasks(nextTasks);
+    setTasks(next);
 
     try {
-      const response = await fetch(
-        `/api/record/${recordId}/tasks`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            action: "reorder",
-            taskIds:
-              nextTasks.map(
-                (task) =>
-                  task.id
-              ),
-          }),
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "保存任务顺序失败"
-        );
-      }
-
-      if (
-        Array.isArray(
-          data?.tasks
-        )
-      ) {
-        setTasks(
-          data.tasks
-        );
-      }
-
-      await loadRecord();
-    } catch (error) {
-      console.error(
-        "保存任务顺序失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "保存任务顺序失败"
-      );
-
+      const response = await fetch(`/api/record/${recordId}/tasks`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reorder: next.map((task, index) => ({
+            taskId: task.id,
+            sort_order: index,
+          })),
+        }),
+      });
+      if (!response.ok) await loadTasks();
+    } catch {
       await loadTasks();
     }
   }
-
-  // ===================================================
-  // Upload File
-  // ===================================================
 
   async function handleUploadFile(
     event: React.ChangeEvent<HTMLInputElement>
   ) {
-    const file =
-      event.target.files?.[0];
-
+    const file = event.target.files?.[0];
     event.target.value = "";
-
-    if (!file || !recordId) {
-      return;
-    }
+    if (!file || !recordId) return;
 
     try {
       setUploading(true);
+      const formData = new FormData();
+      formData.append("file", file);
 
-      const formData =
-        new FormData();
+      const response = await fetch(`/api/record/${recordId}/files`, {
+        method: "POST",
+        body: formData,
+      });
 
-      formData.append(
-        "file",
-        file
-      );
-
-      const response = await fetch(
-        `/api/record/${recordId}/files`,
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "上传文件失败"
-        );
-      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "上传附件失败");
 
       await loadFiles();
       await loadRecord();
-    } catch (error) {
-      console.error(
-        "上传文件失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "上传文件失败"
-      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "上传附件失败");
     } finally {
       setUploading(false);
     }
   }
 
-  // ===================================================
-  // Open File
-  // ===================================================
-
-  async function handleOpenFile(
-    file: RecordFile
-  ) {
+  async function handleOpenFile(file: RecordFile) {
     try {
       const response = await fetch(
-        `/api/record/${recordId}/files?fileId=${encodeURIComponent(
-          file.id
-        )}`
+        `/api/record/${recordId}/files/${file.id}`,
+        { cache: "no-store" }
       );
-
-      const data =
-        await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "打开附件失败"
-        );
+        throw new Error("打开附件失败");
       }
 
-      if (data?.url) {
-        window.open(
-          data.url,
-          "_blank",
-          "noopener,noreferrer"
-        );
-      }
-    } catch (error) {
-      console.error(
-        "打开附件失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "打开附件失败"
-      );
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "打开附件失败");
     }
   }
 
-  // ===================================================
-  // Delete File
-  // ===================================================
-
-  async function handleDeleteFile(
-    file: RecordFile
-  ) {
-    const confirmed =
-      window.confirm(
-        `确定删除附件「${file.file_name}」吗？`
-      );
-
-    if (!confirmed) return;
+  async function handleDeleteFile(file: RecordFile) {
+    if (!window.confirm(`确定删除附件「${file.file_name}」吗？`)) return;
 
     try {
       const response = await fetch(
-        `/api/record/${recordId}/files`,
-        {
-          method: "DELETE",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            fileId: file.id,
-          }),
-        }
+        `/api/record/${recordId}/files/${file.id}`,
+        { method: "DELETE" }
       );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "删除附件失败"
-        );
-      }
-
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "删除附件失败");
       await loadFiles();
       await loadRecord();
-    } catch (error) {
-      console.error(
-        "删除附件失败:",
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "删除附件失败"
-      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "删除附件失败");
     }
   }
-
-  // ===================================================
-  // Memo
-  // ===================================================
-
-  const taskIds = useMemo(
-    () =>
-      tasks.map(
-        (task) =>
-          task.id
-      ),
-    [tasks]
-  );
-
-  const assetDraftCount =
-    batchDrafts.filter(
-      (item) =>
-        item.assetRelated
-    ).length;
-
-  // ===================================================
-  // Loading
-  // ===================================================
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-gray-50">
-        <div className="mx-auto max-w-6xl px-6 py-8">
-          <div className="text-sm text-gray-400">
-            正在加载...
-          </div>
+      <main className="min-h-screen bg-gray-50 p-6">
+        <div className="mx-auto max-w-5xl text-sm text-gray-500">
+          正在加载记录……
         </div>
       </main>
     );
   }
 
-  // ===================================================
-  // Not Found
-  // ===================================================
-
-  if (!record) {
+  if (error || !record) {
     return (
-      <main className="min-h-screen bg-gray-50">
-        <div className="mx-auto max-w-6xl px-6 py-8">
+      <main className="min-h-screen bg-gray-50 p-6">
+        <div className="mx-auto max-w-5xl">
           <button
-            type="button"
-            onClick={() =>
-              router.push(
-                "/record"
-              )
-            }
-            className="mb-6 text-sm text-gray-500 hover:text-gray-900"
+            onClick={() => router.back()}
+            className="mb-5 text-sm text-gray-600 hover:text-gray-900"
           >
             ← 返回
           </button>
-
-          <div className="rounded-xl border border-gray-200 bg-white p-8">
-            <div className="text-sm text-red-600">
-              {error ||
-                "记录不存在"}
-            </div>
+          <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-600">
+            {error || "记录不存在"}
           </div>
         </div>
       </main>
     );
   }
 
-  // ===================================================
-  // Main
-  // ===================================================
-
   return (
     <main className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-6xl px-6 py-8">
-        {/* 返回 */}
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
         <button
           type="button"
-          onClick={() =>
-            router.push(
-              "/record"
-            )
-          }
-          className="mb-6 text-sm text-gray-500 transition hover:text-gray-900"
+          onClick={() => router.back()}
+          className="mb-5 text-sm text-gray-600 hover:text-gray-900"
         >
           ← 返回
         </button>
 
-        {/* =================================================
-            标题
-        ================================================= */}
-
-        <section className="mb-8">
-          <div className="flex items-center gap-3">
+        {/* 标题 */}
+        <section className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
+          <div className="flex gap-3">
             <input
               value={title}
-              onChange={(event) =>
-                setTitle(
-                  event.target.value
-                )
-              }
-              onBlur={saveTitle}
-              onKeyDown={(event) => {
-                if (
-                  event.key ===
-                  "Enter"
-                ) {
-                  event.currentTarget.blur();
-                }
-              }}
-              className="min-w-0 flex-1 border-0 bg-transparent p-0 text-2xl font-semibold text-gray-900 outline-none"
+              onChange={(e) => setTitle(e.target.value)}
+              className="min-w-0 flex-1 border-0 p-0 text-2xl font-semibold text-gray-900 outline-none"
             />
-
-            {savingTitle && (
-              <span className="text-xs text-gray-400">
-                保存中...
-              </span>
-            )}
+            <button
+              type="button"
+              onClick={saveTitle}
+              disabled={savingTitle}
+              className="shrink-0 rounded-lg bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50"
+            >
+              {savingTitle ? "保存中…" : "保存标题"}
+            </button>
           </div>
 
-          <div className="mt-2 text-sm text-gray-500">
-            最后更新：
-            {" "}
-            {formatDateTime(
-              record.updated_at
-            )}
+          <div className="mt-2 text-xs text-gray-400">
+            最后更新：{formatDateTime(record.updated_at)}
           </div>
         </section>
 
-        {/* =================================================
-            正文
-        ================================================= */}
-
-        <section className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <div className="flex flex-wrap items-center gap-1 border-b border-gray-200 bg-gray-50 p-2">
+        {/* 正文 */}
+        <section className="mb-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <div className="flex flex-wrap gap-2 border-b border-gray-100 px-4 py-3">
             <button
               type="button"
-              onClick={() =>
-                editor
-                  ?.chain()
-                  .focus()
-                  .toggleBold()
-                  .run()
-              }
-              className="rounded px-3 py-1.5 text-sm font-bold hover:bg-gray-200"
+              onClick={() => editor?.chain().focus().toggleBold().run()}
+              className="rounded px-3 py-1 text-sm font-bold hover:bg-gray-100"
             >
               B
             </button>
-
             <button
               type="button"
-              onClick={() =>
-                editor
-                  ?.chain()
-                  .focus()
-                  .toggleHeading({
-                    level: 1,
-                  })
-                  .run()
-              }
-              className="rounded px-3 py-1.5 text-sm font-semibold hover:bg-gray-200"
+              onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+              className="rounded px-3 py-1 text-sm hover:bg-gray-100"
             >
               H1
             </button>
-
             <button
               type="button"
-              onClick={() =>
-                editor
-                  ?.chain()
-                  .focus()
-                  .toggleHeading({
-                    level: 2,
-                  })
-                  .run()
-              }
-              className="rounded px-3 py-1.5 text-sm font-semibold hover:bg-gray-200"
+              onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+              className="rounded px-3 py-1 text-sm hover:bg-gray-100"
             >
               H2
             </button>
-
             <button
               type="button"
-              onClick={() =>
-                editor
-                  ?.chain()
-                  .focus()
-                  .toggleBulletList()
-                  .run()
-              }
-              className="rounded px-3 py-1.5 text-sm hover:bg-gray-200"
+              onClick={() => editor?.chain().focus().toggleBulletList().run()}
+              className="rounded px-3 py-1 text-sm hover:bg-gray-100"
             >
               • 列表
             </button>
-
             <button
               type="button"
-              onClick={() =>
-                editor
-                  ?.chain()
-                  .focus()
-                  .toggleOrderedList()
-                  .run()
-              }
-              className="rounded px-3 py-1.5 text-sm hover:bg-gray-200"
+              onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+              className="rounded px-3 py-1 text-sm hover:bg-gray-100"
             >
               1. 列表
             </button>
-
             <button
               type="button"
-              onClick={() =>
-                editor
-                  ?.chain()
-                  .focus()
-                  .setHorizontalRule()
-                  .run()
-              }
-              className="rounded px-3 py-1.5 text-sm hover:bg-gray-200"
+              onClick={() => editor?.chain().focus().setHorizontalRule().run()}
+              className="rounded px-3 py-1 text-sm hover:bg-gray-100"
             >
               ─
             </button>
 
-            <div className="mx-1 h-5 w-px bg-gray-300" />
-
             {[
-              {
-                label: "红",
-                color: "#dc2626",
-              },
-              {
-                label: "橙",
-                color: "#ea580c",
-              },
-              {
-                label: "黄",
-                color: "#ca8a04",
-              },
-              {
-                label: "绿",
-                color: "#16a34a",
-              },
-              {
-                label: "蓝",
-                color: "#2563eb",
-              },
-              {
-                label: "黑",
-                color: "#111827",
-              },
-            ].map((item) => (
+              ["红", "#ef4444"],
+              ["橙", "#f97316"],
+              ["黄", "#eab308"],
+              ["绿", "#22c55e"],
+              ["蓝", "#3b82f6"],
+              ["黑", "#111827"],
+            ].map(([label, color]) => (
               <button
-                key={item.color}
+                key={label}
                 type="button"
                 onClick={() =>
-                  editor
-                    ?.chain()
-                    .focus()
-                    .setColor(
-                      item.color
-                    )
-                    .run()
+                  editor?.chain().focus().setColor(color).run()
                 }
-                className="rounded px-2 py-1.5 text-xs hover:bg-gray-200"
-                style={{
-                  color:
-                    item.color,
-                }}
+                className="rounded px-2 py-1 text-xs hover:bg-gray-100"
+                style={{ color }}
               >
-                {item.label}
+                {label}
               </button>
             ))}
-          </div>
 
-          <EditorContent
-            editor={editor}
-          />
-
-          <div className="flex justify-end border-t border-gray-100 px-5 py-3">
             <button
               type="button"
               onClick={saveContent}
-              disabled={
-                savingContent
-              }
-              className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={savingContent}
+              className="ml-auto rounded-lg bg-gray-900 px-4 py-1.5 text-sm text-white disabled:opacity-50"
             >
-              {savingContent
-                ? "保存中..."
-                : "保存内容"}
+              {savingContent ? "保存中…" : "保存正文"}
             </button>
           </div>
+
+          <EditorContent editor={editor} />
         </section>
 
-        {/* =================================================
-            执行任务
-        ================================================= */}
-
-        <section className="mb-8 rounded-xl border border-gray-200 bg-gray-50 p-4">
+        {/* 执行任务 */}
+        <section className="mb-6 rounded-xl border border-gray-200 bg-gray-100 p-4">
           <div className="mb-3 flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">
+              <h2 className="text-base font-semibold text-gray-900">
                 执行任务
               </h2>
-
               <div className="mt-1 text-xs text-gray-500">
-                进度：
-                {" "}
-                {progress.completed}
-                {" / "}
-                {progress.total}
+                进度：{tasks.filter((x) => x.completed).length} / {tasks.length}
               </div>
             </div>
           </div>
 
-          {/* =================================================
-              任务列表
-          ================================================= */}
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={tasks.map((x) => x.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {tasks.map((task) => (
+                  <SortableTaskRow
+                    key={task.id}
+                    task={task}
+                    holdings={holdings}
+                    onToggle={handleToggleTask}
+                    onDelete={handleDeleteTask}
+                    onSelectHolding={handleSelectHolding}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
 
-          <div className="overflow-hidden rounded-lg bg-white">
-            {tasks.length === 0 ? (
-              <div className="px-4 py-6 text-center text-sm text-gray-400">
+            {!tasks.length && (
+              <div className="px-4 py-8 text-center text-sm text-gray-400">
                 暂无任务
               </div>
-            ) : (
-              <DndContext
-                sensors={sensors}
-                collisionDetection={
-                  closestCenter
-                }
-                onDragEnd={
-                  handleDragEnd
-                }
-              >
-                <SortableContext
-                  items={taskIds}
-                  strategy={
-                    verticalListSortingStrategy
-                  }
-                >
-                  {tasks.map(
-                    (task) => (
-                      <SortableTaskRow
-                        key={
-                          task.id
-                        }
-                        task={task}
-                        onToggle={
-                          handleToggleTask
-                        }
-                        onDelete={
-                          handleDeleteTask
-                        }
-                      />
-                    )
-                  )}
-                </SortableContext>
-              </DndContext>
             )}
           </div>
 
-          {/* =================================================
-              新增单个任务
-          ================================================= */}
-
+          {/* 单个添加 */}
           <div className="mt-4 flex gap-2">
             <input
               value={newTask}
-              onChange={(event) =>
-                setNewTask(
-                  event.target.value
-                )
-              }
-              onKeyDown={(event) => {
-                if (
-                  event.key ===
-                  "Enter"
-                ) {
-                  handleAddTask();
-                }
+              onChange={(e) => setNewTask(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAddTask();
               }}
-              placeholder="输入任务后回车"
-              className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-400"
+              placeholder="添加一个任务，例如：卖出日本基金"
+              className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500"
             />
-
             <button
               type="button"
-              onClick={
-                handleAddTask
-              }
-              disabled={
-                addingTask ||
-                !newTask.trim()
-              }
-              className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={handleAddTask}
+              disabled={addingTask || !newTask.trim()}
+              className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50"
             >
               添加
             </button>
           </div>
 
-          {/* =================================================
-              批量添加
-          ================================================= */}
-
-          <details className="mt-6 border-t border-gray-200 pt-4">
-            <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-900">
+          {/* 批量 */}
+          <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+            <div className="mb-2 text-sm font-medium text-gray-800">
               ＋ 批量添加任务
-            </summary>
-
-            <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3">
-              <textarea
-                value={batchText}
-                onChange={(event) =>
-                  setBatchText(
-                    event.target.value
-                  )
-                }
-                placeholder={
-                  "可以直接粘贴 AI 给你的任务，例如：\n1. 卖出易方达纳指\n2. 卖出日本基金\n3. 卖出摩根入息\n4. 更新香港账户现金\n5. 最后检查整体资产配置"
-                }
-                rows={7}
-                className="w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400"
-              />
-
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <div className="text-xs text-gray-400">
-                  粘贴后先确认任务，确认后才会真正加入记录。
-                </div>
-
-                <button
-                  type="button"
-                  onClick={
-                    handlePreviewBatchTasks
-                  }
-                  disabled={
-                    addingTask ||
-                    !batchText.trim()
-                  }
-                  className="shrink-0 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  识别并确认
-                </button>
-              </div>
             </div>
-          </details>
-
-          {/* =================================================
-              批量任务确认区
-          ================================================= */}
-
-          {showBatchReview && (
-            <div className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white">
-              {/* Header */}
-              <div className="border-b border-gray-200 bg-gray-50 px-4 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-gray-900">
-                      批量任务确认
-                    </h3>
-
-                    <div className="mt-1 text-xs text-gray-500">
-                      共{" "}
-                      {batchDrafts.length}
-                      {" "}
-                      个任务，其中识别出{" "}
-                      {assetDraftCount}
-                      {" "}
-                      个可能与资产有关。
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={
-                      handleCancelBatchReview
-                    }
-                    className="text-xs text-gray-400 hover:text-gray-700"
-                  >
-                    取消
-                  </button>
-                </div>
-              </div>
-
-              {/* Draft List */}
-              <div>
-                {batchDrafts.map(
-                  (draft, index) => (
-                    <div
-                      key={draft.id}
-                      className="border-b border-gray-100 px-4 py-4 last:border-b-0"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="pt-0.5 text-xs text-gray-400">
-                          {index + 1}
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm text-gray-900">
-                            {draft.title}
-                          </div>
-
-                          {/* 资产识别 */}
-                          <div className="mt-2">
-                            {draft.assetRelated ? (
-                              <div className="space-y-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
-                                    资产相关任务
-                                  </span>
-
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      toggleBatchAssetRelated(
-                                        draft.id
-                                      )
-                                    }
-                                    className="text-xs text-gray-400 hover:text-gray-700"
-                                  >
-                                    改为普通任务
-                                  </button>
-                                </div>
-
-                                {/* 当前阶段先设置条件 */}
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-xs text-gray-500">
-                                    执行条件
-                                  </span>
-
-                                  <select
-                                    value={
-                                      draft.condition ??
-                                      ""
-                                    }
-                                    onChange={(event) =>
-                                      changeBatchCondition(
-                                        draft.id,
-                                        event.target
-                                          .value ||
-                                          null
-                                      )
-                                    }
-                                    className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-700 outline-none focus:border-gray-400"
-                                  >
-                                    <option value="">
-                                      暂不设置
-                                    </option>
-
-                                    <option value="回本后卖出">
-                                      回本后卖出
-                                    </option>
-
-                                    <option value="达到目标价格后处理">
-                                      达到目标价格后处理
-                                    </option>
-
-                                    <option value="根据当时价格决定">
-                                      根据当时价格决定
-                                    </option>
-                                  </select>
-                                </div>
-
-                                {/* 下一阶段提示 */}
-                                <div className="text-xs text-gray-400">
-                                  下一步可以关联具体 Holding，系统再自动读取成本、当前市值和盈亏判断条件是否达到。
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500">
-                                  普通任务
-                                </span>
-
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    toggleBatchAssetRelated(
-                                      draft.id
-                                    )
-                                  }
-                                  className="text-xs text-gray-400 hover:text-gray-700"
-                                >
-                                  设为资产相关任务
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* 删除草稿 */}
-                        <button
-                          type="button"
-                          onClick={() =>
-                            removeBatchDraft(
-                              draft.id
-                            )
-                          }
-                          className="shrink-0 rounded px-2 py-1 text-xs text-red-400 hover:bg-red-50 hover:text-red-600"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </div>
-                  )
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-4 py-3">
-                <div className="text-xs text-gray-500">
-                  确认后才会真正写入任务。
-                </div>
-
-                <button
-                  type="button"
-                  onClick={
-                    handleConfirmBatchAdd
-                  }
-                  disabled={
-                    addingTask ||
-                    batchDrafts.length ===
-                      0
-                  }
-                  className="rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {addingTask
-                    ? "添加中..."
-                    : `确认添加 ${batchDrafts.length} 个任务`}
-                </button>
-              </div>
-            </div>
-          )}
+            <textarea
+              value={batchText}
+              onChange={(e) => setBatchText(e.target.value)}
+              placeholder={"一行一个任务，例如：\n卖出易方达纳指\n卖出日本基金\n卖出摩根入息\n处理 TSM"}
+              rows={5}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-gray-500"
+            />
+            <button
+              type="button"
+              onClick={handlePreviewBatchTasks}
+              disabled={!batchText.trim()}
+              className="mt-2 rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+            >
+              预览并确认
+            </button>
+          </div>
         </section>
 
-        {/* =================================================
-            附件
-        ================================================= */}
+        {/* 批量审核 */}
+        {showBatchReview && (
+          <section className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
+            <h2 className="text-base font-semibold text-gray-900">
+              批量任务确认
+            </h2>
+            <div className="mt-1 text-xs text-gray-500">
+              系统会先自动匹配 Holding；无法可靠匹配的任务请选择 Holding。
+            </div>
 
-        <section className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <details>
-            <summary className="cursor-pointer px-5 py-4 text-sm font-semibold text-gray-900">
-              📎 附件
+            <div className="mt-4 space-y-3">
+              {batchDrafts.map((draft) => (
+                <div
+                  key={draft.id}
+                  className="rounded-lg border border-gray-200 p-3"
+                >
+                  <div className="font-medium text-sm text-gray-900">
+                    {draft.title}
+                  </div>
 
-              {files.length > 0 && (
-                <span className="ml-2 text-xs font-normal text-gray-400">
-                  {files.length} 个
-                </span>
-              )}
-            </summary>
+                  <label className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                    <input
+                      type="checkbox"
+                      checked={draft.assetRelated}
+                      onChange={() =>
+                        setBatchDrafts((items) =>
+                          items.map((x) =>
+                            x.id === draft.id
+                              ? { ...x, assetRelated: !x.assetRelated }
+                              : x
+                          )
+                        )
+                      }
+                    />
+                    资产相关任务
+                  </label>
 
-            <div className="border-t border-gray-100 px-5 py-4">
-              {files.length > 0 && (
-                <div className="space-y-2">
-                  {files.map(
-                    (file) => (
-                      <div
-                        key={
-                          file.id
-                        }
-                        className="flex items-center gap-3 rounded-lg border border-gray-100 px-3 py-2"
-                      >
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleOpenFile(
-                              file
-                            )
-                          }
-                          className="min-w-0 flex-1 truncate text-left text-sm text-gray-700 hover:text-gray-900 hover:underline"
-                        >
-                          {
-                            file.file_name
-                          }
-                        </button>
+                  <input
+                    value={draft.condition ?? ""}
+                    onChange={(e) =>
+                      setBatchDrafts((items) =>
+                        items.map((x) =>
+                          x.id === draft.id
+                            ? {
+                                ...x,
+                                condition: e.target.value || null,
+                              }
+                            : x
+                        )
+                      )
+                    }
+                    placeholder="条件，例如：回本后卖出"
+                    className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-xs"
+                  />
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleDeleteFile(
-                              file
-                            )
-                          }
-                          className="shrink-0 rounded px-2 py-1 text-xs text-red-400 hover:bg-red-50 hover:text-red-600"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    )
+                  {draft.assetRelated && (
+                    <select
+                      value={draft.holdingId === null ? "" : String(draft.holdingId)}
+                      onChange={(e) =>
+                        setBatchDrafts((items) =>
+                          items.map((x) =>
+                            x.id === draft.id
+                              ? {
+                                  ...x,
+                                  holdingId: e.target.value
+                                    ? Number(e.target.value)
+                                    : null,
+                                }
+                              : x
+                          )
+                        )
+                      }
+                      className="mt-2 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                    >
+                      <option value="">请选择 Holding</option>
+                      {holdings.map((h) => {
+                        const id = Number(holdingField(h, "id"));
+                        if (!Number.isFinite(id)) return null;
+                        return (
+                          <option key={id} value={id}>
+                            {holdingName(h) || "未命名资产"}
+                            {holdingCode(h) ? ` · ${holdingCode(h)}` : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
                   )}
                 </div>
-              )}
+              ))}
+            </div>
 
-              <label className="mt-4 inline-flex cursor-pointer items-center rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
-                {uploading
-                  ? "上传中..."
-                  : "添加文件"}
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={handleConfirmBatchAdd}
+                disabled={addingTask}
+                className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50"
+              >
+                {addingTask ? "保存中…" : "确认添加"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowBatchReview(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm"
+              >
+                取消
+              </button>
+            </div>
+          </section>
+        )}
 
+        {/* 附件 */}
+        <section className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <details>
+            <summary className="cursor-pointer px-4 py-4 text-sm font-medium text-gray-800">
+              📎 附件
+              {files.length ? `（${files.length}）` : ""}
+            </summary>
+
+            <div className="border-t border-gray-100 p-4">
+              <label className="inline-flex cursor-pointer rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50">
+                {uploading ? "上传中..." : "添加文件"}
                 <input
                   type="file"
                   className="hidden"
-                  onChange={
-                    handleUploadFile
-                  }
-                  disabled={
-                    uploading
-                  }
+                  onChange={handleUploadFile}
+                  disabled={uploading}
                 />
               </label>
+
+              <div className="mt-3 space-y-2">
+                {files.map((file) => (
+                  <div
+                    key={file.id}
+                    className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFile(file)}
+                      className="truncate text-left text-sm text-blue-600 hover:underline"
+                    >
+                      {file.file_name}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteFile(file)}
+                      className="ml-3 shrink-0 text-xs text-red-500"
+                    >
+                      删除
+                    </button>
+                  </div>
+                ))}
+
+                {!files.length && (
+                  <div className="text-sm text-gray-400">
+                    暂无附件
+                  </div>
+                )}
+              </div>
             </div>
           </details>
         </section>
@@ -2032,4 +1392,3 @@ export default function RecordDetailPage() {
     </main>
   );
 }
-
