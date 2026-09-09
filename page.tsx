@@ -50,6 +50,7 @@ type Project = {
   custom: boolean;
   sourceOffset?: number;
   isAnnuityContribution?: boolean;
+  isPensionPayment?: boolean;
 };
 
 type CellItem = {
@@ -75,6 +76,7 @@ type CellItem = {
   sourceOffset?: number;
 
   isAnnuityContribution?: boolean;
+  isPensionPayment?: boolean;
 
   deleted?: boolean;
 };
@@ -574,6 +576,117 @@ function getAnnuityFlag(offset: number) {
   return offset === 12;
 }
 
+const PENSION_PAYMENT_SCHEDULE: Record<number, { july?: number; october?: number }> = {
+  2026: { july: 503000, october: 221000 },
+  2027: { july: 503000, october: 221000 },
+  2028: { july: 393000, october: 221000 },
+  2029: { july: 393000, october: 221000 },
+  2030: { july: 393000, october: 221000 },
+  2031: { july: 393000, october: 221000 },
+  2032: { july: 393000, october: 221000 },
+  2033: { july: 130000, october: 221000 },
+  2034: { july: 130000, october: 129000 },
+  2035: { july: 130000, october: 129000 },
+  2036: { july: 130000, october: 129000 },
+  2037: { july: 130000, october: 129000 },
+  2038: { october: 129000 },
+  2039: { october: 39000 },
+  2040: { october: 39000 },
+  2041: { october: 39000 },
+  2042: { october: 39000 },
+};
+
+function getPensionPayment(year: number, month: number) {
+  const schedule = PENSION_PAYMENT_SCHEDULE[year];
+  if (!schedule) return 0;
+  if (month === 7) return schedule.july ?? 0;
+  if (month === 10) return schedule.october ?? 0;
+  return 0;
+}
+
+function ensurePensionPaymentItems(years: YearData[], projects: Project[]) {
+  const projectId = "fixed:pension-payment";
+  let project = projects.find((item) => item.projectId === projectId);
+
+  if (!project) {
+    project = {
+      projectId,
+      role: "expense",
+      name: "本月交养老保险",
+      custom: false,
+      isAnnuityContribution: false,
+      isPensionPayment: true,
+    };
+    projects.push(project);
+  }
+
+  for (const year of years) {
+    for (const month of year.months) {
+      const amount = getPensionPayment(year.year, month.month);
+
+      // 清理历史版本可能已经生成的重复“本月交养老保险”项目。
+      // 同一个月份只允许存在一个固定养老保险项目。
+      const pensionItems = month.expense.filter(
+        (item) =>
+          item.isPensionPayment === true ||
+          (
+            item.name.trim() === "本月交养老保险" &&
+            item.projectId === projectId
+          )
+      );
+
+      const existing = pensionItems[0];
+
+      // 删除同月多余的养老保险项目，避免 221000 / 221000 重复显示和重复扣年金。
+      for (const duplicate of pensionItems.slice(1)) {
+        const index = month.expense.indexOf(duplicate);
+        if (index >= 0) {
+          month.expense.splice(index, 1);
+        }
+      }
+
+      if (amount > 0) {
+        // 养老保险缴费直接从“积累年金”扣除。
+        // 清除旧的 manualAnnuity，确保新的扣款能够真正进入计算。
+        delete month.manualAnnuity;
+
+        if (existing) {
+          existing.name = "本月交养老保险";
+          existing.projectId = projectId;
+          existing.role = "expense";
+          existing.value = amount;
+          existing.independent = false;
+          existing.fromExcel = false;
+          existing.isPensionPayment = true;
+          existing.isAnnuityContribution = false;
+          existing.deleted = false;
+        } else {
+          month.expense.push({
+            id: uid("pension"),
+            year: year.year,
+            month: month.month,
+            role: "expense",
+            projectId,
+            name: "本月交养老保险",
+            value: amount,
+            independent: false,
+            fromExcel: false,
+            isAnnuityContribution: false,
+            isPensionPayment: true,
+          });
+        }
+      } else if (existing) {
+        const index = month.expense.indexOf(existing);
+        if (index >= 0) {
+          month.expense.splice(index, 1);
+        }
+      }
+    }
+  }
+
+  return { years, projects };
+}
+
 function extractFormulaAdjustment(
   value: unknown
 ) {
@@ -649,28 +762,35 @@ async function loadExcel(): Promise<ParsedExcel> {
   });
 
   // ============================================================
-  // 严格指定年度 Sheet
-  //
-  // 2026 是特殊命名：2026每月估算111
-  // 2027–2037 使用：{年份}每月估算(3)
-  // 只允许读取这些 Sheet，绝不自动选择同年份其它版本。
+  // 年度 Sheet 选择：严格使用固定 Sheet 名。
+  // 2026：2026每月估算111
+  // 2027–2037：{年份}每月估算(3)
+  // 不自动寻找其它版本，也不接受空格/其它括号版本。
   // ============================================================
-  const sheetNames: string[] = [];
-
-  for (let year = TARGET_START_YEAR; year <= EXCEL_END_YEAR; year++) {
-    const expectedName =
+  function pickYearSheet(year: number): string | null {
+    const exactName =
       year === 2026
         ? "2026每月估算111"
         : `${year}每月估算(3)`;
 
-    if (!workbook.SheetNames.includes(expectedName)) {
+    return workbook.SheetNames.includes(exactName)
+      ? exactName
+      : null;
+  }
+
+  const sheetNames: string[] = [];
+  for (let year = TARGET_START_YEAR; year <= EXCEL_END_YEAR; year++) {
+    const selectedName = pickYearSheet(year);
+    if (!selectedName) {
       throw new Error(
-        `NEW.xlsx 缺少 Sheet：${expectedName}。
-请确认 NEW.xlsx 中存在正确的 2026–2037 Sheet。`
+        `NEW.xlsx 缺少严格指定的 Sheet：${
+          year === 2026
+            ? "2026每月估算111"
+            : `${year}每月估算(3)`
+        }\n请不要使用其它版本的“每月估算”Sheet。`
       );
     }
-
-    sheetNames.push(expectedName);
+    sheetNames.push(selectedName);
   }
 
   const diagnostics: ExcelDiagnostics = {
@@ -875,6 +995,15 @@ async function loadExcel(): Promise<ParsedExcel> {
           let label =
             categoryLabel || detailLabel;
 
+          // NEW.xlsx 中的 JJ 对应页面项目“买入基金 015736”。
+          if (normalizeName(label) === "jj") {
+            label = "买入基金 015736";
+          }
+
+          // NEW.xlsx 中的“转去养老保险”直接进入积累年金滚动。
+          const isTransferToPension =
+            normalizeName(label) === "转去养老保险";
+
           if (
             !label &&
             rawValue === ""
@@ -936,9 +1065,8 @@ async function loadExcel(): Promise<ParsedExcel> {
               sourceOffset:
                 offset,
               isAnnuityContribution:
-                getAnnuityFlag(
-                  offset
-                ),
+                isTransferToPension ||
+                getAnnuityFlag(offset),
             });
           }
 
@@ -975,9 +1103,8 @@ async function loadExcel(): Promise<ParsedExcel> {
               offset,
 
             isAnnuityContribution:
-              getAnnuityFlag(
-                offset
-              ),
+              isTransferToPension ||
+              getAnnuityFlag(offset),
           };
 
           if (role === "income") {
@@ -1165,6 +1292,8 @@ async function loadExcel(): Promise<ParsedExcel> {
       originalOpeningAnnuity,
     });
   }
+
+  ensurePensionPaymentItems(years, projects);
 
   return {
     years,
@@ -1670,8 +1799,29 @@ function updateItemValue(
    *
    * 前面的月份保持原来的历史数据不变。
    */
+  // 普通买入 / 支出从修改月份开始同步同一项目；固定养老保险除外。
   const shouldPropagate =
-    item.name.trim() === "下月定投";
+    item.isPensionPayment !== true;
+
+  /*
+   * “转去养老保险”是积累年金的唯一月度新增来源。
+   * 如果用户修改了它，就必须从这个月开始重新计算年金滚动链。
+   *
+   * 旧数据可能存在 manualAnnuity（用户以前手动修改过“积累年金”），
+   * 如果不清掉，calculateYears() 会优先使用旧的 manualAnnuity，
+   * 导致修改“转去养老保险”后，下面的“积累年金”看起来不变。
+   *
+   * 因此：只要修改的是标记为 isAnnuityContribution 的项目，
+   * 就清除当前月及所有后续月份的 manualAnnuity，让新的金额重新
+   * 按“上个月积累年金 + 当月转去养老保险”向后滚动。
+   * 前面的月份完全不受影响。
+   */
+  const shouldResetAnnuity =
+    item.role === "expense" &&
+    (
+      item.isAnnuityContribution === true ||
+      item.isPensionPayment === true
+    );
 
   for (const year of years) {
     for (const month of year.months) {
@@ -1701,6 +1851,23 @@ function updateItemValue(
         if (shouldUpdate) {
           x.value = safeValue;
         }
+      }
+
+      // 修改收入 / 普通支出后，本月“本月剩下”必须重新按
+      // 收入 - 普通支出实时计算，不能继续被旧的手工值卡住。
+      // 同时清掉从本月开始的“总现金剩下”手工覆盖，
+      // 让它重新沿着“上月总现金剩下 + 本月剩下”滚动。
+      if (
+        shouldPropagate &&
+        isAfterOrEqual &&
+        (item.role === "income" || item.role === "expense")
+      ) {
+        delete month.manualRemaining;
+        delete month.manualTotalCash;
+      }
+
+      if (shouldResetAnnuity && isAfterOrEqual) {
+        delete month.manualAnnuity;
       }
     }
   }
@@ -1778,15 +1945,20 @@ function calculateYears(
           0
         );
 
+      // “本月交养老保险”只从“积累年金”扣除，
+      // 不属于家庭现金流支出，因此不能进入 expense / 本月剩下 / 总现金剩下。
       const expense =
-        month.expense.reduce(
-          (sum, item) =>
-            sum +
-            (item.deleted
-              ? 0
-              : item.value),
-          0
-        );
+        month.expense
+          .filter(
+            (item) =>
+              !item.deleted &&
+              !item.isPensionPayment
+          )
+          .reduce(
+            (sum, item) =>
+              sum + item.value,
+            0
+          );
 
       const calculatedRemaining =
         income - expense;
@@ -1824,12 +1996,24 @@ function calculateYears(
             0
           );
 
-      // 积累年金严格按月滚动：
-      // 当月“转去养老保险” + 上个月“积累年金”。
-      // 不再额外叠加 Excel 特殊调整。
+      const pensionPayment =
+        month.expense
+          .filter(
+            (item) =>
+              item.isPensionPayment &&
+              !item.deleted
+          )
+          .reduce(
+            (sum, item) =>
+              sum + item.value,
+            0
+          );
+
+      // 积累年金 = 上个月积累年金 + 当月转去养老保险 - 当月交养老保险。
       const calculatedAnnuity =
         runningAnnuity +
-        annuityContribution;
+        annuityContribution -
+        pensionPayment;
 
       // 积累年金可以手动修改。修改后的值直接作为下个月年金起点。
       const annuity =
@@ -1918,15 +2102,17 @@ function buildAIExport(
         year.months.reduce(
           (sum, month) =>
             sum +
-            month.expense.reduce(
-              (
-                s,
-                item
-              ) =>
-                s +
-                item.value,
-              0
-            ),
+            month.expense
+              .filter(
+                (item) =>
+                  !item.deleted &&
+                  !item.isPensionPayment
+              )
+              .reduce(
+                (s, item) =>
+                  s + item.value,
+                0
+              ),
           0
         );
 
@@ -2308,15 +2494,20 @@ function MonthCard({
       0
     );
 
+  // “本月交养老保险”不计入家庭现金支出合计，
+  // 它只在“积累年金”计算中扣除。
   const expenseTotal =
-    month.expense.reduce(
-      (sum, item) =>
-        sum +
-        (item.deleted
-          ? 0
-          : item.value),
-      0
-    );
+    month.expense
+      .filter(
+        (item) =>
+          !item.deleted &&
+          !item.isPensionPayment
+      )
+      .reduce(
+        (sum, item) =>
+          sum + item.value,
+        0
+      );
 
   return (
     <div className="min-w-0 overflow-hidden rounded-xl border border-gray-200">
@@ -2934,6 +3125,24 @@ function sanitizeYears(years: YearData[]) {
     }
 
     if (!map.has(year.year)) {
+      // 清理旧版本/迁移数据中同一共享项目在同一月份重复出现的问题。
+      // independent=true 的项目允许同名，因此只清理共享项目。
+      for (const month of year.months) {
+        const dedupe = (items: CellItem[]) => {
+          const seen = new Set<string>();
+          return items.filter((item) => {
+            if (item.independent) return true;
+            const key = `${item.role}::${item.projectId}::${normalizeName(item.name)}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        };
+
+        month.income = dedupe(month.income);
+        month.expense = dedupe(month.expense);
+      }
+
       map.set(year.year, year);
     }
   }
@@ -2941,6 +3150,186 @@ function sanitizeYears(years: YearData[]) {
   return Array.from(map.values()).sort(
     (a, b) => a.year - b.year
   );
+}
+
+// ============================================================
+// 快速录入
+// ============================================================
+
+const DEFAULT_QUICK_ENTRY =
+  "支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000";
+
+function parseQuickEntry(text: string) {
+  const lines = text
+    .split(/[\n;；]+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const parsed: Array<{
+    role: Role;
+    name: string;
+    monthValues: Map<number, number>;
+  }> = [];
+
+  const scheduleRegex = /(\d{1,2})\s*-\s*(\d{1,2})\s*月\s*([\d,.]+)|(\d{1,2}(?:\s*[\/、,，]\s*\d{1,2})+)\s*月\s*([\d,.]+)|(\d{1,2})\s*月\s*([\d,.]+)/g;
+
+  for (const line of lines) {
+    const roleMatch = line.match(/(收入|支出)/);
+    if (!roleMatch) continue;
+
+    const role: Role =
+      roleMatch[1] === "收入" ? "income" : "expense";
+
+    const firstMatch = scheduleRegex.exec(line);
+    scheduleRegex.lastIndex = 0;
+    if (!firstMatch) continue;
+
+    const name = line
+      .slice(roleMatch.index + roleMatch[0].length, firstMatch.index)
+      .replace(/^[\s:：\-—]+|[\s:：\-—]+$/g, "")
+      .trim();
+
+    if (!name) continue;
+
+    const monthValues = new Map<number, number>();
+    let match: RegExpExecArray | null;
+
+    while ((match = scheduleRegex.exec(line))) {
+      if (match[1] && match[2] && match[3]) {
+        const start = Number(match[1]);
+        const end = Number(match[2]);
+        const value = numberValue(match[3]);
+        for (let month = start; month <= end; month++) {
+          if (month >= 1 && month <= 12) {
+            monthValues.set(month, value);
+          }
+        }
+      } else if (match[4] && match[5]) {
+        const value = numberValue(match[5]);
+        for (const part of match[4].split(/[\/、,，]/)) {
+          const month = Number(part.trim());
+          if (month >= 1 && month <= 12) {
+            monthValues.set(month, value);
+          }
+        }
+      } else if (match[6] && match[7]) {
+        const month = Number(match[6]);
+        const value = numberValue(match[7]);
+        if (month >= 1 && month <= 12) {
+          monthValues.set(month, value);
+        }
+      }
+    }
+
+    if (monthValues.size > 0) {
+      parsed.push({ role, name, monthValues });
+    }
+  }
+
+  return parsed;
+}
+
+function applyQuickEntry(
+  years: YearData[],
+  projects: Project[],
+  text: string
+) {
+  const entries = parseQuickEntry(text);
+
+  if (entries.length === 0) {
+    return {
+      years,
+      projects,
+      count: 0,
+      message: "没有识别到可填写的内容。格式例如：支出 报销 1-11月4596，12月6396",
+    };
+  }
+
+  let count = 0;
+
+  for (const entry of entries) {
+    let project = findSharedProject(
+      projects,
+      entry.role,
+      entry.name
+    );
+
+    if (!project) {
+      project = {
+        projectId: projectUid(entry.role),
+        role: entry.role,
+        name: entry.name,
+        custom: true,
+        isAnnuityContribution: false,
+      };
+      projects.push(project);
+    }
+
+    for (const year of years) {
+      for (const month of year.months) {
+        const list =
+          entry.role === "income"
+            ? month.income
+            : month.expense;
+
+        const matches = list.filter(
+          (item) =>
+            !item.independent &&
+            item.projectId === project!.projectId &&
+            item.role === entry.role
+        );
+
+        let target = matches[0];
+
+        // 快速录入时，同一共享项目同一月份只保留一条，避免历史数据重复。
+        for (const duplicate of matches.slice(1)) {
+          const index = list.indexOf(duplicate);
+          if (index >= 0) list.splice(index, 1);
+        }
+
+        if (!target) {
+          target = {
+            id: uid("quick"),
+            year: year.year,
+            month: month.month,
+            role: entry.role,
+            projectId: project!.projectId,
+            name: project!.name,
+            value: 0,
+            independent: false,
+            fromExcel: false,
+            isAnnuityContribution: false,
+          };
+          list.push(target);
+        }
+
+        // 只修改用户明确填写的月份。
+        // 例如输入“收入 报销 12月6396”，只能改 12 月，
+        // 不能把 1-11 月原来的报销金额全部改成 0。
+        const value = entry.monthValues.get(month.month);
+        if (value !== undefined) {
+          if (target.value !== value) count++;
+          target.value = value;
+          target.deleted = false;
+        }
+      }
+    }
+  }
+
+  // 修改普通收入/支出后，旧的手工计算结果不能继续卡住现金滚动。
+  for (const year of years) {
+    for (const month of year.months) {
+      delete month.manualRemaining;
+      delete month.manualTotalCash;
+    }
+  }
+
+  return {
+    years,
+    projects,
+    count,
+    message: `已快速填写 ${entries.length} 个项目，共更新 ${count} 个金额。`,
+  };
 }
 
 // ============================================================
@@ -2997,6 +3386,21 @@ export default function CashflowPlanningPage() {
   const [newExpenseName, setNewExpenseName] =
     useState("");
 
+  // ==========================================================
+  // 快速录入
+  // ==========================================================
+
+  const [quickEntryText, setQuickEntryText] =
+    useState(
+      "支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000"
+    );
+
+  const [quickEntryMessage, setQuickEntryMessage] =
+    useState<string | null>(null);
+
+  const [quickSeeded, setQuickSeeded] =
+    useState(false);
+
   const [editingId, setEditingId] =
     useState<string | null>(
       null
@@ -3025,6 +3429,77 @@ export default function CashflowPlanningPage() {
     useState(false);
 
   // ==========================================================
+  // NEW.xlsx 项目标准化 / 云端缺失年份补齐
+  // ==========================================================
+  function normalizeImportedExcelSource(source: ParsedExcel) {
+    const importedYears = clone(source.years);
+    const importedProjects = clone(source.projects);
+
+    for (const project of importedProjects) {
+      if (normalizeName(project.name) === "jj") {
+        project.name = "买入基金 015736";
+      }
+      if (normalizeName(project.name) === "转去养老保险") {
+        project.isAnnuityContribution = true;
+      }
+    }
+
+    for (const year of importedYears) {
+      for (const month of year.months) {
+        for (const item of [...month.income, ...month.expense]) {
+          if (normalizeName(item.name) === "jj") {
+            item.name = "买入基金 015736";
+          }
+          if (normalizeName(item.name) === "转去养老保险") {
+            item.isAnnuityContribution = true;
+          }
+        }
+      }
+    }
+
+    return { years: importedYears, projects: importedProjects };
+  }
+
+  function mergeExcelIntoStoredState(
+    storedYears: YearData[],
+    storedProjects: Project[],
+    source: ParsedExcel
+  ) {
+    const imported = normalizeImportedExcelSource(source);
+    const nextYears = clone(storedYears);
+    const nextProjects = clone(storedProjects);
+    const existingYears = new Set(nextYears.map((year) => year.year));
+
+    // 云端已有年份保留；NEW.xlsx 负责补齐 2031–2037 等缺失年份。
+    for (const excelYear of imported.years) {
+      if (excelYear.year < TARGET_START_YEAR || excelYear.year > EXCEL_END_YEAR) continue;
+      if (!existingYears.has(excelYear.year)) {
+        nextYears.push(excelYear);
+      }
+    }
+
+    for (const excelProject of imported.projects) {
+      const existing = nextProjects.find(
+        (project) =>
+          project.role === excelProject.role &&
+          normalizeName(project.name) === normalizeName(excelProject.name)
+      );
+      if (existing) {
+        if (excelProject.isAnnuityContribution) {
+          existing.isAnnuityContribution = true;
+        }
+      } else {
+        nextProjects.push(excelProject);
+      }
+    }
+
+    return {
+      years: sanitizeYears(nextYears),
+      projects: nextProjects,
+    };
+  }
+
+  // ==========================================================
   // 初始化
   // ==========================================================
 
@@ -3051,23 +3526,45 @@ export default function CashflowPlanningPage() {
           const cloud = await loadCashflowPlanning();
 
           if (cloud.hasData && cloud.state) {
-            const rebuilt = rebuildProjectLinks(
+            const merged = mergeExcelIntoStoredState(
               sanitizeYears(cloud.state.years),
-              cloud.state.projects
+              cloud.state.projects,
+              source
             );
 
-            if (rebuilt.years.length > 0) {
-              setYears(rebuilt.years);
-              setProjects(rebuilt.projects);
+            const rebuilt = rebuildProjectLinks(
+              merged.years,
+              merged.projects
+            );
+
+            const withPension = ensurePensionPaymentItems(
+              rebuilt.years,
+              rebuilt.projects
+            );
+
+            if (withPension.years.length > 0) {
+              setYears(withPension.years);
+              setProjects(withPension.projects);
               localStorage.setItem(
                 STORAGE_KEY,
-                JSON.stringify({ years: rebuilt.years, projects: rebuilt.projects })
+                JSON.stringify({ years: withPension.years, projects: withPension.projects })
               );
               setSelectedYear(
-                rebuilt.years.find((x) => x.year === 2026)?.year ??
-                  rebuilt.years[0]?.year ??
+                withPension.years.find((x) => x.year === 2026)?.year ??
+                  withPension.years[0]?.year ??
                   null
               );
+
+              // 把 NEW.xlsx 补进来的 2031–2037 一并保存到云端。
+              try {
+                await saveCashflowPlanning({
+                  years: withPension.years,
+                  projects: withPension.projects,
+                } as CashflowState);
+              } catch (mergeSaveError) {
+                console.warn("NEW.xlsx 新增年份同步到 Supabase 失败：", mergeSaveError);
+              }
+
               cloudLoaded = true;
             }
           }
@@ -3090,13 +3587,24 @@ export default function CashflowPlanningPage() {
               const storedYears = sanitizeYears(parsed.years);
 
               if (storedYears.length > 0) {
-                const rebuilt = rebuildProjectLinks(
+                const merged = mergeExcelIntoStoredState(
                   storedYears,
-                  parsed.projects
+                  parsed.projects,
+                  source
                 );
 
-                setYears(rebuilt.years);
-                setProjects(rebuilt.projects);
+                const rebuilt = rebuildProjectLinks(
+                  merged.years,
+                  merged.projects
+                );
+
+                const withPension = ensurePensionPaymentItems(
+                  rebuilt.years,
+                  rebuilt.projects
+                );
+
+                setYears(withPension.years);
+                setProjects(withPension.projects);
                 setSelectedYear(
                   rebuilt.years.find((x) => x.year === 2026)?.year ??
                     rebuilt.years[0]?.year ??
@@ -3105,8 +3613,8 @@ export default function CashflowPlanningPage() {
 
                 try {
                   await saveCashflowPlanning({
-                    years: rebuilt.years,
-                    projects: rebuilt.projects,
+                    years: withPension.years,
+                    projects: withPension.projects,
                   } as CashflowState);
                 } catch (migrationError) {
                   console.warn("旧数据迁移到 Supabase 失败，继续使用 localStorage：", migrationError);
@@ -3121,16 +3629,23 @@ export default function CashflowPlanningPage() {
           }
         }
 
+        const normalizedSource = normalizeImportedExcelSource(source);
+
+        const withPension = ensurePensionPaymentItems(
+          normalizedSource.years,
+          normalizedSource.projects
+        );
+
         setYears(
-          source.years
+          withPension.years
         );
 
         setProjects(
-          source.projects
+          withPension.projects
         );
 
         setSelectedYear(
-          source.years[0]
+          withPension.years[0]
             ?.year ?? null
         );
       } catch (err) {
@@ -3185,16 +3700,6 @@ export default function CashflowPlanningPage() {
           "CASHFLOW-PLANNING Supabase 保存失败：",
           saveError
         );
-
-        if (saveError instanceof Error) {
-    console.error("Supabase error message:", saveError.message);
-    console.error("Supabase error stack:", saveError.stack);
-  } else {
-    console.error(
-      "Supabase error JSON:",
-      JSON.stringify(saveError, null, 2)
-    );
-  }
       }
     }, 700);
 
@@ -3203,6 +3708,43 @@ export default function CashflowPlanningPage() {
       window.clearTimeout(saveTimer);
     };
   }, [years, projects, loading]);
+
+  // ==========================================================
+  // 默认快速填写：按用户当前要求首次自动写入
+  // 2026 只有 9-12 月，因此 2026 年只会实际填写可见月份。
+  // 后续年份按完整 1-12 月填写。
+  // ==========================================================
+
+  useEffect(() => {
+    if (loading || years.length === 0 || quickSeeded) return;
+
+    const seedKey =
+      "ai-wealth-os-cashflow-quick-seed-v2";
+
+    if (localStorage.getItem(seedKey) === "1") {
+      setQuickSeeded(true);
+      return;
+    }
+
+    const nextYears = clone(years);
+    const nextProjects = clone(projects);
+    const result = applyQuickEntry(
+      nextYears,
+      nextProjects,
+      DEFAULT_QUICK_ENTRY
+    );
+
+    if (result.count > 0) {
+      setYears(result.years);
+      setProjects(result.projects);
+      setQuickEntryMessage(
+        "已按你的规则自动填写：报销 1-11 月 4596、12 月 6396；房租 1/4/7/10 月 6000。"
+      );
+    }
+
+    localStorage.setItem(seedKey, "1");
+    setQuickSeeded(true);
+  }, [loading, years, projects, quickSeeded]);
 
   // ==========================================================
   // 计算
@@ -3314,6 +3856,25 @@ export default function CashflowPlanningPage() {
         ""
       );
     }
+  }
+
+  // ==========================================================
+  // 快速填写
+  // ==========================================================
+
+  function handleQuickEntry() {
+    const nextYears = clone(years);
+    const nextProjects = clone(projects);
+
+    const result = applyQuickEntry(
+      nextYears,
+      nextProjects,
+      quickEntryText
+    );
+
+    setYears(result.years);
+    setProjects(result.projects);
+    setQuickEntryMessage(result.message);
   }
 
   // ==========================================================
@@ -3663,9 +4224,13 @@ export default function CashflowPlanningPage() {
 
     const sortedYears = sanitizeYears(nextYears);
     const rebuilt = rebuildProjectLinks(sortedYears, projects);
+    const withPension = ensurePensionPaymentItems(
+      rebuilt.years,
+      rebuilt.projects
+    );
 
-    setYears(rebuilt.years);
-    setProjects(rebuilt.projects);
+    setYears(withPension.years);
+    setProjects(withPension.projects);
     setSelectedYear(targetEnd);
     setCopyMessage(
       `已复制：${copySourceYear} 年模板 → ${targetStart}${targetStart === targetEnd ? "" : `～${targetEnd}`} 年（共 ${targetCount} 年）`
@@ -4229,6 +4794,55 @@ export default function CashflowPlanningPage() {
         </div>
 
         {/* ====================================================
+            快速填写
+        ==================================================== */}
+
+        <section className="mb-5 rounded-xl border border-gray-200 bg-white p-4">
+          <div className="mb-2 flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold">快速填写</div>
+              <div className="mt-0.5 text-xs text-gray-500">
+                直接用一句话写月份和金额，系统会自动填入全部年份；同一项目同一月份不会重复。
+              </div>
+            </div>
+            <div className="text-xs text-gray-400">
+              例如：支出 报销 1-11月4596，12月6396
+            </div>
+          </div>
+
+          <textarea
+            value={quickEntryText}
+            onChange={(e) => setQuickEntryText(e.target.value)}
+            className="min-h-[86px] w-full resize-y rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm leading-6 outline-none focus:border-gray-500"
+            placeholder={'支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000'}
+          />
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleQuickEntry}
+              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium hover:bg-gray-100"
+            >
+              一键填写
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setQuickEntryText(DEFAULT_QUICK_ENTRY)}
+              className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 hover:bg-gray-100"
+            >
+              恢复示例
+            </button>
+
+            {quickEntryMessage && (
+              <span className="text-xs text-gray-500">
+                {quickEntryMessage}
+              </span>
+            )}
+          </div>
+        </section>
+
+        {/* ====================================================
             新增项目
         ==================================================== */}
 
@@ -4687,3 +5301,4 @@ function rebuildProjectLinks(
     projects,
   };
 }
+
