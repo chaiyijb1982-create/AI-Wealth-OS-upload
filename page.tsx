@@ -1453,13 +1453,21 @@ function addMonthlyProject(
     return years;
   }
 
+  const isTransferToPension =
+    role === "expense" &&
+    normalizeName(cleanName) ===
+      "转去养老保险";
+
   for (const year of years) {
     if (year.year !== yearValue) continue;
 
     for (const month of year.months) {
       if (month.month !== monthValue) continue;
 
-      const list = role === "income" ? month.income : month.expense;
+      const list =
+        role === "income"
+          ? month.income
+          : month.expense;
 
       list.push({
         id: uid("cell"),
@@ -1469,11 +1477,37 @@ function addMonthlyProject(
         projectId: projectUid(role),
         name: cleanName,
         value,
+
         // 单月新增 = 只属于当前年月，不同步其他月份
         independent: true,
         fromExcel: false,
-        isAnnuityContribution: false,
+
+        // “转去养老保险”必须进入累计年金
+        isAnnuityContribution:
+          isTransferToPension,
       });
+    }
+  }
+
+  // ==========================================================
+  // 关键：
+  // 新增“转去养老保险”以后，
+  // 当前月及后续月份不能继续使用旧的 manualAnnuity。
+  // ==========================================================
+  if (isTransferToPension) {
+    for (const year of years) {
+      for (const month of year.months) {
+        const isAfterOrEqual =
+          year.year > yearValue ||
+          (
+            year.year === yearValue &&
+            month.month >= monthValue
+          );
+
+        if (isAfterOrEqual) {
+          delete month.manualAnnuity;
+        }
+      }
     }
   }
 
