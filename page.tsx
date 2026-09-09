@@ -3241,7 +3241,8 @@ function applyQuickEntry(
       years,
       projects,
       count: 0,
-      message: "没有识别到可填写的内容。格式例如：支出 报销 1-11月4596，12月6396",
+      message:
+        "没有识别到可填写的内容。格式例如：支出 报销 1-11月4596，12月6396",
     };
   }
 
@@ -3254,15 +3255,29 @@ function applyQuickEntry(
       entry.name
     );
 
+    // ========================================================
+    // 关键：判断是不是“转去养老保险”
+    // ========================================================
+    const isTransferToPension =
+      entry.role === "expense" &&
+      normalizeName(entry.name) ===
+        "转去养老保险";
+
     if (!project) {
       project = {
         projectId: projectUid(entry.role),
         role: entry.role,
         name: entry.name,
         custom: true,
-        isAnnuityContribution: false,
+        isAnnuityContribution:
+          isTransferToPension,
       };
+
       projects.push(project);
+    } else if (isTransferToPension) {
+      // 已经存在的“转去养老保险”项目，
+      // 也强制标记为累计年金来源。
+      project.isAnnuityContribution = true;
     }
 
     for (const year of years) {
@@ -3275,16 +3290,21 @@ function applyQuickEntry(
         const matches = list.filter(
           (item) =>
             !item.independent &&
-            item.projectId === project!.projectId &&
+            item.projectId ===
+              project!.projectId &&
             item.role === entry.role
         );
 
         let target = matches[0];
 
-        // 快速录入时，同一共享项目同一月份只保留一条，避免历史数据重复。
+        // 快速录入时，同一共享项目同一月份只保留一条
         for (const duplicate of matches.slice(1)) {
-          const index = list.indexOf(duplicate);
-          if (index >= 0) list.splice(index, 1);
+          const index =
+            list.indexOf(duplicate);
+
+          if (index >= 0) {
+            list.splice(index, 1);
+          }
         }
 
         if (!target) {
@@ -3293,30 +3313,53 @@ function applyQuickEntry(
             year: year.year,
             month: month.month,
             role: entry.role,
-            projectId: project!.projectId,
+            projectId:
+              project!.projectId,
             name: project!.name,
             value: 0,
             independent: false,
             fromExcel: false,
-            isAnnuityContribution: false,
+
+            // ==================================================
+            // 关键修改
+            // ==================================================
+            isAnnuityContribution:
+              isTransferToPension,
           };
+
           list.push(target);
         }
 
-        // 只修改用户明确填写的月份。
-        // 例如输入“收入 报销 12月6396”，只能改 12 月，
-        // 不能把 1-11 月原来的报销金额全部改成 0。
-        const value = entry.monthValues.get(month.month);
+        // 只修改用户明确填写的月份
+        const value =
+          entry.monthValues.get(
+            month.month
+          );
+
         if (value !== undefined) {
-          if (target.value !== value) count++;
+          if (target.value !== value) {
+            count++;
+          }
+
           target.value = value;
           target.deleted = false;
+
+          // ==================================================
+          // 关键修改
+          // 即使这个项目以后被设为 independent，
+          // 也必须保留累计年金标记。
+          // ==================================================
+          if (isTransferToPension) {
+            target.isAnnuityContribution =
+              true;
+          }
         }
       }
     }
   }
 
-  // 修改普通收入/支出后，旧的手工计算结果不能继续卡住现金滚动。
+  // 修改普通收入/支出后，
+  // 旧的手工计算结果不能继续卡住现金滚动。
   for (const year of years) {
     for (const month of year.months) {
       delete month.manualRemaining;
