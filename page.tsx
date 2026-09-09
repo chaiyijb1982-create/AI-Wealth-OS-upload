@@ -9,6 +9,24 @@ import {
   type CashflowState,
 } from "@/lib/cashflow-planning";
 
+
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+
+import { CSS } from "@dnd-kit/utilities";
 // ============================================================
 // AI Wealth OS
 // CASHFLOW-PLANNING
@@ -2466,6 +2484,14 @@ type MonthCardProps = {
     item: CellItem
   ) => void;
 
+  onReorderItems: (
+  year: number,
+  month: number,
+  role: Role,
+  activeId: string,
+  overId: string
+) => void;
+
   onAddMonthlyItem: (
     year: number,
     month: number,
@@ -2494,6 +2520,7 @@ function MonthCard({
   onValueCommit,
   onDelete,
   onToggleIndependent,
+  onReorderItems,
   onAddMonthlyItem,
   editingCalcKey,
   editingCalcValue,
@@ -2503,6 +2530,60 @@ function MonthCard({
 }: MonthCardProps) {
   const [addingRole, setAddingRole] = useState<Role | null>(null);
   const [addingName, setAddingName] = useState("");
+  
+  const sensors = useSensors(
+  useSensor(PointerSensor, {
+    activationConstraint: {
+      distance: 6,
+    },
+  })
+);
+
+function handleDragEnd(event: DragEndEvent) {
+  const { active, over } = event;
+
+  if (!over || active.id === over.id) {
+    return;
+  }
+
+  const activeId = String(active.id);
+  const overId = String(over.id);
+
+  const incomeIds = month.income.map(
+    (item) => item.id
+  );
+
+  const expenseIds = month.expense.map(
+    (item) => item.id
+  );
+
+  if (
+    incomeIds.includes(activeId) &&
+    incomeIds.includes(overId)
+  ) {
+    onReorderItems(
+      month.year,
+      month.month,
+      "income",
+      activeId,
+      overId
+    );
+    return;
+  }
+
+  if (
+    expenseIds.includes(activeId) &&
+    expenseIds.includes(overId)
+  ) {
+    onReorderItems(
+      month.year,
+      month.month,
+      "expense",
+      activeId,
+      overId
+    );
+  }
+}
 
   function submitMonthlyItem() {
     if (!addingRole || !addingName.trim()) return;
@@ -2543,7 +2624,12 @@ function MonthCard({
         0
       );
 
-  return (
+return (
+  <DndContext
+    sensors={sensors}
+    collisionDetection={closestCenter}
+    onDragEnd={handleDragEnd}
+  >
     <div className="min-w-0 overflow-hidden rounded-xl border border-gray-200">
 
       {/* 月份 */}
@@ -2573,47 +2659,33 @@ function MonthCard({
           </div>
         </div>
 
-        <div className="space-y-1.5">
-          {month.income.length ===
-          0 ? (
-            <div className="py-2 text-center text-xs text-gray-400">
-              无收入项目
-            </div>
-          ) : (
-            month.income.map(
-              (item) => (
-                <ProjectRow
-                  key={item.id}
-                  item={item}
-                  editingId={
-                    editingId
-                  }
-                  editingValue={
-                    editingValue
-                  }
-                  setEditingId={
-                    setEditingId
-                  }
-                  setEditingValue={
-                    setEditingValue
-                  }
-                  onRename={
-                    onRename
-                  }
-                  onValueCommit={
-                    onValueCommit
-                  }
-                  onDelete={
-                    onDelete
-                  }
-                  onToggleIndependent={
-                    onToggleIndependent
-                  }
-                />
-              )
-            )
-          )}
-        </div>
+        <SortableContext
+  items={month.income.map((item) => item.id)}
+  strategy={verticalListSortingStrategy}
+>
+  <div className="space-y-1.5">
+    {month.income.length === 0 ? (
+      <div className="py-2 text-center text-xs text-gray-400">
+        无收入项目
+      </div>
+    ) : (
+      month.income.map((item) => (
+        <ProjectRow
+          key={item.id}
+          item={item}
+          editingId={editingId}
+          editingValue={editingValue}
+          setEditingId={setEditingId}
+          setEditingValue={setEditingValue}
+          onRename={onRename}
+          onValueCommit={onValueCommit}
+          onDelete={onDelete}
+          onToggleIndependent={onToggleIndependent}
+        />
+      ))
+    )}
+  </div>
+</SortableContext>
 
         <div className="mt-2 flex items-center gap-1.5">
           {addingRole === "income" ? (
@@ -2671,47 +2743,35 @@ function MonthCard({
           </div>
         </div>
 
-        <div className="space-y-1.5">
-          {month.expense.length ===
-          0 ? (
-            <div className="py-2 text-center text-xs text-gray-400">
-              无支出项目
-            </div>
-          ) : (
-            month.expense.map(
-              (item) => (
-                <ProjectRow
-                  key={item.id}
-                  item={item}
-                  editingId={
-                    editingId
-                  }
-                  editingValue={
-                    editingValue
-                  }
-                  setEditingId={
-                    setEditingId
-                  }
-                  setEditingValue={
-                    setEditingValue
-                  }
-                  onRename={
-                    onRename
-                  }
-                  onValueCommit={
-                    onValueCommit
-                  }
-                  onDelete={
-                    onDelete
-                  }
-                  onToggleIndependent={
-                    onToggleIndependent
-                  }
-                />
-              )
-            )
-          )}
-        </div>
+
+
+        <SortableContext
+  items={month.expense.map((item) => item.id)}
+  strategy={verticalListSortingStrategy}
+>
+  <div className="space-y-1.5">
+    {month.expense.length === 0 ? (
+      <div className="py-2 text-center text-xs text-gray-400">
+        无支出项目
+      </div>
+    ) : (
+      month.expense.map((item) => (
+        <ProjectRow
+          key={item.id}
+          item={item}
+          editingId={editingId}
+          editingValue={editingValue}
+          setEditingId={setEditingId}
+          setEditingValue={setEditingValue}
+          onRename={onRename}
+          onValueCommit={onValueCommit}
+          onDelete={onDelete}
+          onToggleIndependent={onToggleIndependent}
+        />
+      ))
+    )}
+  </div>
+</SortableContext>
 
         <div className="mt-2 flex items-center gap-1.5">
           {addingRole === "expense" ? (
@@ -2797,6 +2857,7 @@ function MonthCard({
         />
       </div>
     </div>
+    </DndContext>
   );
 }
 
@@ -2932,14 +2993,50 @@ function ProjectRow({
     editingId ===
     `value:${item.id}`;
 
+const {
+  attributes,
+  listeners,
+  setNodeRef,
+  transform,
+  transition,
+  isDragging,
+} = useSortable({
+  id: item.id,
+});
+
+const style = {
+  transform: CSS.Transform.toString(transform),
+  transition,
+  opacity: isDragging ? 0.5 : 1,
+  zIndex: isDragging ? 10 : undefined,
+};
+
   return (
-    <div className="rounded-lg border border-gray-200 bg-white px-2 py-1.5">
+    <div
+  ref={setNodeRef}
+  style={style}
+  className={`rounded-lg border border-gray-200 bg-white px-2 py-1.5 ${
+    isDragging ? "shadow-lg" : ""
+  }`}
+>
 
-      <div className="flex min-w-0 items-center gap-1.5">
+ <div className="flex min-w-0 items-center gap-1.5">
 
-        {/* 名称 */}
+  {/* 拖拽 */}
 
-        <div className="min-w-0 flex-1">
+  <button
+    type="button"
+    {...attributes}
+    {...listeners}
+    title="拖动调整顺序"
+    className="shrink-0 cursor-grab touch-none rounded px-1 text-gray-300 hover:bg-gray-100 hover:text-gray-500 active:cursor-grabbing"
+  >
+    ⋮⋮
+  </button>
+
+  {/* 名称 */}
+
+  <div className="min-w-0 flex-1">
 
           {nameEditing ? (
             <input
@@ -3976,6 +4073,75 @@ export default function CashflowPlanningPage() {
       result.projects
     );
   }
+
+// ==========================================================
+// 拖拽排序：只调整当前月份、当前收入/支出的项目顺序
+// 不修改金额、项目属性或任何计算逻辑
+// ==========================================================
+function handleReorderItems(
+  yearValue: number,
+  monthValue: number,
+  role: Role,
+  activeId: string,
+  overId: string
+) {
+  const nextYears = clone(years);
+
+  const targetYear = nextYears.find(
+    (year) =>
+      year.year === yearValue
+  );
+
+  const targetMonth =
+    targetYear?.months.find(
+      (month) =>
+        month.month === monthValue
+    );
+
+  if (!targetMonth) {
+    return;
+  }
+
+  const list =
+    role === "income"
+      ? targetMonth.income
+      : targetMonth.expense;
+
+  const oldIndex = list.findIndex(
+    (item) =>
+      item.id === activeId
+  );
+
+  const newIndex = list.findIndex(
+    (item) =>
+      item.id === overId
+  );
+
+  if (
+    oldIndex < 0 ||
+    newIndex < 0 ||
+    oldIndex === newIndex
+  ) {
+    return;
+  }
+
+  const reordered = arrayMove(
+    list,
+    oldIndex,
+    newIndex
+  );
+
+  if (role === "income") {
+    targetMonth.income =
+      reordered;
+  } else {
+    targetMonth.expense =
+      reordered;
+  }
+
+  setYears(nextYears);
+}
+
 
   // ==========================================================
   // 独立
@@ -5142,6 +5308,9 @@ export default function CashflowPlanningPage() {
                           }
                           onToggleIndependent={
                             handleToggleIndependent
+                          }
+                          onReorderItems={
+                           handleReorderItems
                           }
                           onAddMonthlyItem={
                             handleAddMonthlyItem
