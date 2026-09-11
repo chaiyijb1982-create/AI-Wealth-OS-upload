@@ -299,8 +299,8 @@ const MONTH_COLS = [
 ];
 
 type ResolvedRowCells = {
-  category: unknown;
-  detail: unknown;
+  category: string;
+  detail: string;
   value: unknown;
   valueCol: number;
   categoryCol: number;
@@ -528,33 +528,29 @@ function resolve2026RowCells(
   let category = "";
   let detail = "";
 
-  if (leftTexts.length >= 2) {
-    category =
-      leftTexts[0].value;
-    detail =
-      leftTexts[leftTexts.length - 1]
-        .value;
-  } else if (leftTexts.length === 1) {
-    category =
-      leftTexts[0].value;
-  } else if (nearestText) {
-    category =
-      nearestText.value;
-  }
+ if (leftTexts.length >= 2) {
+  category = String(leftTexts[0].value ?? "");
+  detail = String(
+    leftTexts[leftTexts.length - 1].value ?? ""
+  );
+} else if (leftTexts.length === 1) {
+  category = String(leftTexts[0].value ?? "");
+} else if (nearestText) {
+  category = String(nearestText.value ?? "");
+}
 
-  // 收入区典型结构可能只有：
-  // D=LP / E=15000
-  // 自动识别器会得到 category=LP。
-  //
-  // 如果存在金额右侧文字，则只在 category/detail 都为空时使用。
-  if (
-    !category &&
-    !detail &&
-    afterValue.length > 0
-  ) {
-    category =
-      afterValue[0].value;
-  }
+// 收入区典型结构可能只有：
+// D=LP / E=15000
+// 自动识别器会得到 category=LP。
+//
+// 如果存在金额右侧文字，则只在 category/detail 都为空时使用。
+if (
+  !category &&
+  !detail &&
+  afterValue.length > 0
+) {
+  category = String(afterValue[0].value ?? "");
+}
 
   return {
     category,
@@ -1978,13 +1974,13 @@ function calculateYears(
     const months: CalculationMonth[] =
       [];
 
-    let runningCash =
-      previousCash ??
-      year.originalOpeningCash;
+    let runningCash: number =
+  previousCash ??
+  year.originalOpeningCash;
 
-    let runningAnnuity =
-      previousAnnuity ??
-      year.originalOpeningAnnuity;
+   let runningAnnuity: number =
+  previousAnnuity ??
+  year.originalOpeningAnnuity;
 
     for (const month of year.months) {
       const income =
@@ -2084,14 +2080,14 @@ function calculateYears(
       });
     }
 
-    const endingCash =
+    const endingCash: number = 
       months.length > 0
         ? months[
             months.length - 1
           ].totalCash
         : runningCash;
 
-    const endingAnnuity =
+    const endingAnnuity: number  =
       months.length > 0
         ? months[
             months.length - 1
@@ -3315,10 +3311,15 @@ function parseQuickEntry(text: string) {
     scheduleRegex.lastIndex = 0;
     if (!firstMatch) continue;
 
-    const name = line
-      .slice(roleMatch.index + roleMatch[0].length, firstMatch.index)
-      .replace(/^[\s:：\-—]+|[\s:：\-—]+$/g, "")
-      .trim();
+const roleIndex = roleMatch.index ?? 0;
+
+const name = line
+  .slice(
+    roleIndex + roleMatch[0].length,
+    firstMatch.index
+  )
+  .replace(/^[\s:：\-—]+|[\s:：\-—]+$/g, "")
+  .trim();
 
     if (!name) continue;
 
