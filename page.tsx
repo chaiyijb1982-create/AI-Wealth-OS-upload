@@ -882,6 +882,170 @@ function updateItemValue(
   }
 }
 
+
+// ============================================================
+// 固定养老保险缴费
+//
+// 规则：
+// 2026：从现有 Supabase 数据读取，不自动新增
+// 2027：7月 503000，10月 221000
+// 2028-2032：7月 393000，10月 221000
+// 2033：7月 130000，10月 221000
+// 2034-2037：7月 130000，10月 129000
+// 2038：10月 129000
+// 2039-2042：10月 39000
+//
+// “本月交养老保险”只影响积累年金，
+// 不进入普通家庭现金支出。
+// ============================================================
+
+function getPensionPayment(
+  year: number,
+  month: number
+): number {
+  if (year === 2027) {
+    if (month === 7) return 503000;
+    if (month === 10) return 221000;
+    return 0;
+  }
+
+  if (year >= 2028 && year <= 2032) {
+    if (month === 7) return 393000;
+    if (month === 10) return 221000;
+    return 0;
+  }
+
+  if (year === 2033) {
+    if (month === 7) return 130000;
+    if (month === 10) return 221000;
+    return 0;
+  }
+
+  if (year >= 2034 && year <= 2037) {
+    if (month === 7) return 130000;
+    if (month === 10) return 129000;
+    return 0;
+  }
+
+  if (year === 2038) {
+    if (month === 10) return 129000;
+    return 0;
+  }
+
+  if (year >= 2039 && year <= 2042) {
+    if (month === 10) return 39000;
+    return 0;
+  }
+
+  return 0;
+}
+
+function ensurePensionPaymentItems(
+  years: YearData[],
+  projects: Project[]
+) {
+  const nextYears = clone(years);
+  const nextProjects = clone(projects);
+
+  // 固定项目 ID。
+  // 必须稳定，不能每次初始化都生成新的 projectId，
+  // 否则会造成重复项目。
+  const projectId = "fixed:pension-payment";
+
+  let project =
+    nextProjects.find(
+      (item) =>
+        item.projectId === projectId
+    );
+
+  if (!project) {
+    project = {
+      projectId,
+      role: "expense",
+      name: "本月交养老保险",
+      custom: false,
+      isPensionPayment: true,
+      isAnnuityContribution: false,
+    };
+
+    nextProjects.push(project);
+  } else {
+    // 确保旧数据也具有正确标记
+    project.role = "expense";
+    project.name = "本月交养老保险";
+    project.isPensionPayment = true;
+    project.isAnnuityContribution = false;
+  }
+
+  for (const year of nextYears) {
+    for (const month of year.months) {
+      const amount = getPensionPayment(
+        year.year,
+        month.month
+      );
+
+      // 找到这个月现有的养老保险项目
+      const existingIndex =
+        month.expense.findIndex(
+          (item) =>
+            item.projectId ===
+              projectId ||
+            (
+              item.role === "expense" &&
+              item.isPensionPayment === true
+            )
+        );
+
+      if (amount > 0) {
+        const item =
+          existingIndex >= 0
+            ? month.expense[existingIndex]
+            : null;
+
+        if (item) {
+          item.projectId = projectId;
+          item.name = "本月交养老保险";
+          item.role = "expense";
+          item.value = amount;
+          item.independent = false;
+          item.fromExcel = false;
+          item.isPensionPayment = true;
+          item.isAnnuityContribution = false;
+          item.deleted = false;
+        } else {
+          month.expense.push({
+            id: `pension-${year.year}-${month.month}`,
+            year: year.year,
+            month: month.month,
+            role: "expense",
+            projectId,
+            name: "本月交养老保险",
+            value: amount,
+            independent: false,
+            fromExcel: false,
+            isPensionPayment: true,
+            isAnnuityContribution: false,
+          });
+        }
+      } else {
+        // 非缴费月份：
+        // 如果以前有自动生成的养老保险项目，则删除。
+        if (existingIndex >= 0) {
+          month.expense.splice(
+            existingIndex,
+            1
+          );
+        }
+      }
+    }
+  }
+
+  return {
+    years: nextYears,
+    projects: nextProjects,
+  };
+}
+
 // ============================================================
 // 年金特殊调整
 // ============================================================
@@ -2534,8 +2698,7 @@ export default function CashflowPlanningPage() {
   const [quickEntryMessage, setQuickEntryMessage] =
     useState<string | null>(null);
 
-  const [quickSeeded, setQuickSeeded] =
-    useState(false);
+
 
   const [editingId, setEditingId] =
     useState<string | null>(
@@ -2582,7 +2745,159 @@ export default function CashflowPlanningPage() {
     Promise.resolve()
   );
 
+  // ==========================================================
+  // Supabase 初始化
+  //
+  // 唯一数据来源：
+  // 页面打开 → Supabase
+  //
+  // 不再从 NEW.xlsx 初始化
+  // 不再从 localStorage 恢复业务数据
+  // ==========================================================
 
+  useEffect(() => {
+    let mounted = true;
+
+    async function init() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        console.log(
+          "[CASHFLOW] 开始读取 Supabase..."
+        );
+
+        const cloud = await Promise.race([
+          loadCashflowPlanning(),
+
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              reject(
+                new Error(
+                  "读取 Supabase 现金流数据超过 15 秒，请检查 /api/cashflow-planning"
+                )
+              );
+            }, 15000);
+          }),
+        ]);
+
+        if (!mounted) {
+          return;
+        }
+
+        console.log(
+          "[CASHFLOW] Supabase 返回：",
+          cloud
+        );
+
+        if (
+          !cloud.hasData ||
+          !cloud.state ||
+          !Array.isArray(
+            cloud.state.years
+          ) ||
+          cloud.state.years.length === 0
+        ) {
+          throw new Error(
+            "Supabase 中没有现金流规划数据，请先完成一次初始化。"
+          );
+        }
+
+        // ======================================================
+        // 从 Supabase 恢复数据
+        // ======================================================
+
+        const rebuilt =
+          rebuildProjectLinks(
+            sanitizeYears(
+              clone(
+                cloud.state.years
+              )
+            ),
+            clone(
+              cloud.state.projects ?? []
+            )
+          );
+
+        // ======================================================
+        // 自动确保养老保险项目存在
+        // ======================================================
+
+        const withPension =
+          ensurePensionPaymentItems(
+            rebuilt.years,
+            rebuilt.projects
+          );
+
+        if (!mounted) {
+          return;
+        }
+
+        // ======================================================
+        // 非常重要：
+        // 第一次从 Supabase 读取以后，
+        // 不允许初始化数据立即反向 POST。
+        // ======================================================
+
+        skipInitialSaveRef.current =
+          true;
+
+        setYears(
+          withPension.years
+        );
+
+        setProjects(
+          withPension.projects
+        );
+
+        // 默认打开 2026
+        setSelectedYear(
+          withPension.years.find(
+            (year) =>
+              year.year === 2026
+          )?.year ??
+            withPension.years[0]
+              ?.year ??
+            null
+        );
+
+        console.log(
+          "[CASHFLOW] Supabase 读取完成：",
+          {
+            years:
+              withPension.years.map(
+                (year) => year.year
+              ),
+            projectCount:
+              withPension.projects.length,
+          }
+        );
+      } catch (err) {
+        console.error(
+          "[CASHFLOW] Supabase 初始化失败：",
+          err
+        );
+
+        if (mounted) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "读取现金流规划数据失败"
+          );
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    init();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // ==========================================================
   // 自动保存：Supabase 正式数据
@@ -2645,42 +2960,7 @@ export default function CashflowPlanningPage() {
     };
   }, [years, projects, loading]);
 
-  // ==========================================================
-  // 默认快速填写：按用户当前要求首次自动写入
-  // 2026 只有 9-12 月，因此 2026 年只会实际填写可见月份。
-  // 后续年份按完整 1-12 月填写。
-  // ==========================================================
 
-  useEffect(() => {
-    if (loading || years.length === 0 || quickSeeded) return;
-
-    const seedKey =
-      "ai-wealth-os-cashflow-quick-seed-v2";
-
-    if (localStorage.getItem(seedKey) === "1") {
-      setQuickSeeded(true);
-      return;
-    }
-
-    const nextYears = clone(years);
-    const nextProjects = clone(projects);
-    const result = applyQuickEntry(
-      nextYears,
-      nextProjects,
-      DEFAULT_QUICK_ENTRY
-    );
-
-    if (result.count > 0) {
-      setYears(result.years);
-      setProjects(result.projects);
-      setQuickEntryMessage(
-        "已按你的规则自动填写：报销 1-11 月 4596、12 月 6396；房租 1/4/7/10 月 6000。"
-      );
-    }
-
-    localStorage.setItem(seedKey, "1");
-    setQuickSeeded(true);
-  }, [loading, years, projects, quickSeeded]);
 
   // ==========================================================
   // 计算
@@ -3276,7 +3556,7 @@ function handleReorderItems(
     return (
       <main className="min-h-screen bg-white p-6">
         <div className="text-sm text-gray-500">
-          正在读取现金流模板……
+          正在读取 Supabase 现金流数据……
         </div>
       </main>
     );
