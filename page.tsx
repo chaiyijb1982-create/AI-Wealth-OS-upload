@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   loadCashflowPlanning,
@@ -3675,6 +3675,22 @@ export default function CashflowPlanningPage() {
   }
 
     // ==========================================================
+  // Supabase 保存控制
+  //
+  // 关键规则：
+  // 1. 首次从 Supabase 读取时，绝不自动反写。
+  // 2. 用户真正修改 state 后才保存。
+  // 3. 保存请求严格串行，避免旧 POST 晚于新 POST 完成，
+  //    用旧快照把新数据（例如 2037）覆盖掉。
+  // ==========================================================
+
+  const skipInitialSaveRef = useRef(true);
+
+  const saveChainRef = useRef<Promise<void>>(
+    Promise.resolve()
+  );
+
+  // ==========================================================
   // 初始化
   //
   // ★ 正式运行模式：只从 Supabase 读取。
@@ -3736,6 +3752,10 @@ export default function CashflowPlanningPage() {
           return;
         }
 
+        // 这一批数据来自 Supabase，是“加载”，不是“修改”。
+        // 标记下一次保存 effect 为初始化快照，禁止它反写数据库。
+        skipInitialSaveRef.current = true;
+
         setYears(
           withPension.years
         );
@@ -3784,12 +3804,28 @@ export default function CashflowPlanningPage() {
 
   // ==========================================================
   // 自动保存：Supabase 正式数据
+  //
+  // 注意：API POST 是“整套快照 DELETE + INSERT”。
+  // 因此这里必须保证：
+  // - 初始化读取不能触发保存；
+  // - 同一时间只能有一个保存请求；
+  // - 后来的快照必须排在前一个保存完成之后。
   // ==========================================================
 
   useEffect(() => {
     if (loading || years.length === 0) return;
 
-    const state = { years, projects };
+    // 首次从 Supabase 加载出来的数据，只是初始化快照，不能立即 POST。
+    if (skipInitialSaveRef.current) {
+      skipInitialSaveRef.current = false;
+      return;
+    }
+
+    // 在 effect 中立即复制，避免后续 state 变化影响本次快照。
+    const snapshot: CashflowState = clone({
+      years,
+      projects,
+    });
 
     setSaved(true);
 
@@ -3797,15 +3833,28 @@ export default function CashflowPlanningPage() {
       setSaved(false);
     }, 1000);
 
-    const saveTimer = window.setTimeout(async () => {
-      try {
-        await saveCashflowPlanning(state as CashflowState);
-      } catch (saveError) {
-        console.error(
-          "CASHFLOW-PLANNING Supabase 保存失败：",
-          saveError
-        );
-      }
+    const saveTimer = window.setTimeout(() => {
+      // 严格串行保存。
+      // 如果旧请求还没结束，新请求必须等旧请求完成后再执行，
+      // 防止旧快照最后完成并覆盖最新数据。
+      saveChainRef.current = saveChainRef.current
+        .catch((previousError) => {
+          console.error(
+            "CASHFLOW-PLANNING 上一次 Supabase 保存失败：",
+            previousError
+          );
+        })
+        .then(async () => {
+          try {
+            await saveCashflowPlanning(snapshot);
+          } catch (saveError) {
+            console.error(
+              "CASHFLOW-PLANNING Supabase 保存失败：",
+              saveError
+            );
+            throw saveError;
+          }
+        });
     }, 700);
 
     return () => {
@@ -5478,3 +5527,4 @@ function rebuildProjectLinks(
     projects,
   };
 }
+
