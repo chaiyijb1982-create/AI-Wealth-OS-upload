@@ -3288,7 +3288,7 @@ function sanitizeYears(years: YearData[]) {
 // ============================================================
 
 const DEFAULT_QUICK_ENTRY =
-  "支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000";
+  "支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000\n支出 转去养老保险 1月55000 2月160000 3月80000 4月0  5月32000 6月47000 7月50000 8月40000  9月47000 10月57000 11月0 12月139926";
 
 function parseQuickEntry(text: string) {
   const lines = text
@@ -3566,7 +3566,7 @@ export default function CashflowPlanningPage() {
 
   const [quickEntryText, setQuickEntryText] =
     useState(
-      "支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000"
+      "支出 报销 1-11月4596，12月6396\n收入 房租 1/4/7/10月6000 \n支出 转去养老保险 1月55000 2月160000 3月80000 4月0  5月32000 6月47000 7月50000 8月40000  9月47000 10月57000 11月0 12月139926"
     );
 
   const [quickEntryMessage, setQuickEntryMessage] =
@@ -5049,7 +5049,7 @@ function handleReorderItems(
               </div>
             </div>
             <div className="text-xs text-gray-400">
-              例如：支出 报销 1-11月4596，12月6396
+              例如：支出 报销 1-11月4596，12月6396, 支出 转去养老保险 1月55000 2月160000 3月80000 4月0  5月32000 6月47000 7月50000 8月40000  9月47000 10月57000 11月0 12月139926
             </div>
           </div>
 
