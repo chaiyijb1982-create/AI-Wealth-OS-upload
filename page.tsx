@@ -47,7 +47,6 @@ const TARGET_START_YEAR = 2026;
 
 const TARGET_END_YEAR = 2042;
 
-// 2026 只从 9 月开始读取；2027–2037 保持全年。
 
 
 
@@ -881,6 +880,7 @@ function updateItemValue(
     }
   }
 }
+
 
 
 // ============================================================
@@ -2790,6 +2790,11 @@ export default function CashflowPlanningPage() {
           cloud
         );
 
+        console.log(
+  "[CASHFLOW] loadCashflowPlanning 年份：",
+  cloud.state?.years?.map((y) => y.year)
+);
+
         if (
           !cloud.hasData ||
           !cloud.state ||
@@ -2819,6 +2824,10 @@ export default function CashflowPlanningPage() {
             )
           );
 
+          console.log(
+  "[CASHFLOW] rebuildProjectLinks 后年份：",
+  rebuilt.years.map((y) => y.year)
+);
         // ======================================================
         // 自动确保养老保险项目存在
         // ======================================================
@@ -2828,6 +2837,12 @@ export default function CashflowPlanningPage() {
             rebuilt.years,
             rebuilt.projects
           );
+
+   
+        console.log(
+  "[CASHFLOW] ensurePensionPaymentItems 后年份：",
+  withPension.years.map((y) => y.year)
+);
 
         if (!mounted) {
           return;
