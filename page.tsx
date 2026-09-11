@@ -3677,21 +3677,9 @@ export default function CashflowPlanningPage() {
     // ==========================================================
   // 初始化
   //
-  // 数据来源优先级：
-  //
-  // ① Supabase 有数据
-  //    → 直接使用 Supabase
-  //    → 不读取 NEW.xlsx
-  //
-  // ② Supabase 没数据
-  //    → 尝试 localStorage 旧数据
-  //    → 如果有旧数据，迁移到 Supabase
-  //
-  // ③ Supabase + localStorage 都没有
-  //    → 第一次读取 NEW.xlsx
-  //    → 写入 Supabase
-  //
-  // NEW.xlsx 从此只负责“首次初始化”
+  // ★ 正式运行模式：只从 Supabase 读取。
+  // ★ NEW.xlsx / localStorage 不再作为初始化数据源。
+  // ★ 初始化完成后，页面关闭再打开，仍然只读取 Supabase。
   // ==========================================================
 
   useEffect(() => {
@@ -3702,245 +3690,46 @@ export default function CashflowPlanningPage() {
         setLoading(true);
         setError(null);
 
-        // ======================================================
-        // 第一优先级：Supabase
-        // ======================================================
-
-        try {
-          console.log(
-            "[CASHFLOW] 正在读取 Supabase..."
-          );
-
-          const cloud =
-            await loadCashflowPlanning();
-
-          if (!mounted) {
-            return;
-          }
-
-          // ====================================================
-          // Supabase 已经存在正式数据
-          //
-          // ★ 关键：
-          // 这里绝对不能再读取 NEW.xlsx
-          // 也不能 merge NEW.xlsx
-          // ====================================================
-
-          if (
-            cloud.hasData &&
-            cloud.state &&
-            Array.isArray(cloud.state.years) &&
-            cloud.state.years.length > 0
-          ) {
-            console.log(
-              "[CASHFLOW] Supabase 有数据，直接使用 Supabase"
-            );
-
-            const rebuilt =
-              rebuildProjectLinks(
-                sanitizeYears(
-                  clone(cloud.state.years)
-                ),
-                clone(
-                  cloud.state.projects ?? []
-                )
-              );
-
-            const withPension =
-              ensurePensionPaymentItems(
-                rebuilt.years,
-                rebuilt.projects
-              );
-
-            if (!mounted) {
-              return;
-            }
-
-            setYears(
-              withPension.years
-            );
-
-            setProjects(
-              withPension.projects
-            );
-
-            setSelectedYear(
-              withPension.years.find(
-                (x) => x.year === 2026
-              )?.year ??
-                withPension.years[0]?.year ??
-                null
-            );
-
-            // 本地只保存缓存
-            // 不是主数据源
-            localStorage.setItem(
-              STORAGE_KEY,
-              JSON.stringify({
-                years:
-                  withPension.years,
-                projects:
-                  withPension.projects,
-              })
-            );
-
-            console.log(
-              "[CASHFLOW] Supabase 数据加载完成"
-            );
-
-            setLoading(false);
-
-            return;
-          }
-
-          console.log(
-            "[CASHFLOW] Supabase 暂无数据"
-          );
-        } catch (cloudError) {
-          console.warn(
-            "[CASHFLOW] Supabase 读取失败：",
-            cloudError
-          );
-        }
-
-        // ======================================================
-        // 第二优先级：旧 localStorage
-        //
-        // 仅用于：
-        // 1. 旧版本已经存在本地数据
-        // 2. Supabase 第一次还没有数据
-        //
-        // 成功后立即迁移到 Supabase。
-        // ======================================================
-
-        try {
-          const stored =
-            localStorage.getItem(
-              STORAGE_KEY
-            );
-
-          if (stored) {
-            const parsed =
-              JSON.parse(stored);
-
-            if (
-              parsed?.years &&
-              Array.isArray(
-                parsed.years
-              ) &&
-              parsed.years.length > 0
-            ) {
-              console.log(
-                "[CASHFLOW] 发现旧 localStorage 数据，准备迁移到 Supabase"
-              );
-
-              const rebuilt =
-                rebuildProjectLinks(
-                  sanitizeYears(
-                    clone(parsed.years)
-                  ),
-                  clone(
-                    parsed.projects ?? []
-                  )
-                );
-
-              const withPension =
-                ensurePensionPaymentItems(
-                  rebuilt.years,
-                  rebuilt.projects
-                );
-
-              if (!mounted) {
-                return;
-              }
-
-              setYears(
-                withPension.years
-              );
-
-              setProjects(
-                withPension.projects
-              );
-
-              setSelectedYear(
-                withPension.years.find(
-                  (x) =>
-                    x.year === 2026
-                )?.year ??
-                  withPension.years[0]
-                    ?.year ??
-                  null
-              );
-
-              // ==================================================
-              // 旧 localStorage → Supabase
-              // ==================================================
-
-              try {
-                await saveCashflowPlanning({
-                  years:
-                    withPension.years,
-                  projects:
-                    withPension.projects,
-                } as CashflowState);
-
-                console.log(
-                  "[CASHFLOW] localStorage 已成功迁移到 Supabase"
-                );
-              } catch (
-                migrationError
-              ) {
-                console.warn(
-                  "[CASHFLOW] localStorage → Supabase 迁移失败：",
-                  migrationError
-                );
-              }
-
-              setLoading(false);
-
-              return;
-            }
-          }
-        } catch (localError) {
-          console.warn(
-            "[CASHFLOW] localStorage 读取失败：",
-            localError
-          );
-        }
-
-        // ======================================================
-        // 第三优先级：NEW.xlsx
-        //
-        // ★ 只有第一次才走这里
-        //
-        // Supabase 有数据以后，
-        // 永远不会执行到这里。
-        // ======================================================
-
         console.log(
-          "[CASHFLOW] 第一次初始化：读取 NEW.xlsx"
+          "[CASHFLOW] 正在读取 Supabase..."
         );
 
-        const source =
-          await loadExcel();
+        const cloud =
+          await loadCashflowPlanning();
 
         if (!mounted) {
           return;
         }
 
-        setExcelDiagnostics(
-          source.diagnostics
+        if (
+          !cloud.hasData ||
+          !cloud.state ||
+          !Array.isArray(cloud.state.years) ||
+          cloud.state.years.length === 0
+        ) {
+          throw new Error(
+            "Supabase 中没有现金流规划数据，请先完成一次初始化。"
+          );
+        }
+
+        console.log(
+          "[CASHFLOW] Supabase 有数据，直接使用 Supabase"
         );
 
-        const normalizedSource =
-          normalizeImportedExcelSource(
-            source
+        const rebuilt =
+          rebuildProjectLinks(
+            sanitizeYears(
+              clone(cloud.state.years)
+            ),
+            clone(
+              cloud.state.projects ?? []
+            )
           );
 
         const withPension =
           ensurePensionPaymentItems(
-            normalizedSource.years,
-            normalizedSource.projects
+            rebuilt.years,
+            rebuilt.projects
           );
 
         if (!mounted) {
@@ -3956,58 +3745,16 @@ export default function CashflowPlanningPage() {
         );
 
         setSelectedYear(
-          withPension.years[0]?.year ??
+          withPension.years.find(
+            (x) => x.year === 2026
+          )?.year ??
+            withPension.years[0]?.year ??
             null
         );
 
-        // ======================================================
-        // NEW.xlsx → Supabase
-        //
-        // 只执行第一次初始化。
-        // ======================================================
-
-        try {
-          await saveCashflowPlanning({
-            years:
-              withPension.years,
-            projects:
-              withPension.projects,
-          } as CashflowState);
-
-          console.log(
-            "[CASHFLOW] NEW.xlsx 首次初始化已保存到 Supabase"
-          );
-
-          // 同步保存本地缓存
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({
-              years:
-                withPension.years,
-              projects:
-                withPension.projects,
-            })
-          );
-        } catch (
-          firstSaveError
-        ) {
-          console.error(
-            "[CASHFLOW] NEW.xlsx 首次写入 Supabase 失败：",
-            firstSaveError
-          );
-
-          // 即使云端第一次保存失败，
-          // 本地仍然保留数据，避免当前页面数据消失。
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({
-              years:
-                withPension.years,
-              projects:
-                withPension.projects,
-            })
-          );
-        }
+        console.log(
+          "[CASHFLOW] Supabase 数据加载完成"
+        );
       } catch (err) {
         console.error(
           "[CASHFLOW] 初始化失败：",
@@ -4018,7 +3765,7 @@ export default function CashflowPlanningPage() {
           setError(
             err instanceof Error
               ? err.message
-              : "读取现金流模板失败"
+              : "读取现金流规划数据失败"
           );
         }
       } finally {
@@ -4036,18 +3783,13 @@ export default function CashflowPlanningPage() {
   }, []);
 
   // ==========================================================
-  // 自动保存：localStorage 缓存 + Supabase 正式数据
+  // 自动保存：Supabase 正式数据
   // ==========================================================
 
   useEffect(() => {
     if (loading || years.length === 0) return;
 
     const state = { years, projects };
-
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(state)
-    );
 
     setSaved(true);
 
@@ -5736,4 +5478,3 @@ function rebuildProjectLinks(
     projects,
   };
 }
-
