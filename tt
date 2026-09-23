@@ -1,3 +1,12 @@
+(.venv) C:\Users\cyjtd\A-Stock-Formula-Lab>python scripts\inspect_other_stocks.py
+python: can't open file 'C:\\Users\\cyjtd\\A-Stock-Formula-Lab\\scripts\\inspect_other_stocks.py': [Errno 2] No such file or directory
+
+(.venv) C:\Users\cyjtd\A-Stock-Formula-Lab>python scripts\inspect_other_stock.py
+
+================================================================================
+检查 Baostock 其他股票
+================================================================================
+
 数据库：C:\Users\cyjtd\A-Stock-Formula-Lab\data\baostock_final_test.db
 
 ================================================================================
