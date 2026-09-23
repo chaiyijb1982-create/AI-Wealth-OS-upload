@@ -1,0 +1,511 @@
+(.venv) C:\Users\cyjtd\A-Stock-Formula-Lab>python scripts\download_all_stocks.py --limit 20
+
+
+
+======================================================================
+
+A股历史行情批量下载
+
+======================================================================
+
+数据库：C:\Users\cyjtd\A-Stock-Formula-Lab\data\a_stock.db
+
+股票总数：5567
+
+本次处理：20
+
+开始日期：20000101
+
+结束日期：20260923
+
+复权方式：qfq
+
+失败重试：4
+
+======================================================================
+
+
+
+[1/20] 000001 平安银行 (深A)
+
+      下载尝试 1/4
+
+      ✓ 成功 6317 条
+
+
+
+[2/20] 000002 万  科Ａ (深A)
+
+      下载尝试 1/4
+
+      ✓ 成功 6265 条
+
+
+
+[3/20] 000006 深振业Ａ (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[4/20] 000007 全新好 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[5/20] 000008 神州高铁 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      ✓ 成功 6090 条
+
+
+
+[6/20] 000009 中国宝安 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      ✓ 成功 6269 条
+
+
+
+[7/20] 000010 *ST美丽 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[8/20] 000011 深物业A (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[9/20] 000012 南  玻Ａ (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      ✓ 成功 6364 条
+
+
+
+[10/20] 000014 沙河股份 (深A)
+
+      下载尝试 1/4
+
+      ✓ 成功 6319 条
+
+
+
+[11/20] 000016 *ST康佳A (深A)
+
+      下载尝试 1/4
+
+      ✓ 成功 6288 条
+
+
+
+[12/20] 000017 深中华A (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[13/20] 000019 深粮控股 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[14/20] 000020 深华发Ａ (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[15/20] 000021 深科技 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[16/20] 000025 特  力Ａ (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[17/20] 000026 飞亚达 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[18/20] 000027 深圳能源 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[19/20] 000028 国药一致 (深A)
+
+      下载尝试 1/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      2 秒后重试...
+
+      下载尝试 2/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      4 秒后重试...
+
+      下载尝试 3/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      6 秒后重试...
+
+      下载尝试 4/4
+
+      下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+      ✗ 失败
+
+      RuntimeError: 下载失败：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+
+
+[20/20] 000029 深深房Ａ (深A)
+
+      下载尝试 1/4
+
+      ✓ 成功 5403 条
+
+
+
+======================================================================
+
+本次下载完成
+
+======================================================================
+
+本次处理：20
+
+成功：8
+
+跳过：0
+
+失败：12
+
+本次新增/更新记录：49315
+
+
+
+失败记录：C:\Users\cyjtd\A-Stock-Formula-Lab\results\download_failures.csv
+
+
+
+======================================================================
+
+数据库行情统计
+
+======================================================================
+
+行情记录总数：55325
+
+已经有行情的股票：9
+
+最早日期：2000-01-04
+
+最新日期：2026-09-23
